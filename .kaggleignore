@@ -1,0 +1,15 @@
+# Ignore files/folders when pushing to Kaggle
+venv312/
+data/raw_fits/
+results/
+reports/
+pipeline.log
+__pycache__/
+**/__pycache__/
+.git/
+.ipynb_checkpoints/
+.gemini/
+*.fits
+*.zip
+*.tar.gz
+
