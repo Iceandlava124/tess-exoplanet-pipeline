@@ -21,6 +21,7 @@ tensorflow>=2.14.0         # CNN classifier via Keras API
 # --- Transit Modelling ---
 batman-package>=2.4.8      # Transit light curve model (Kreidberg 2015)
 transitleastsquares>=1.0.31 # Stellar limb-darkened transit detection (Hippke 2019)
+ldtk>=1.7.0                # Limb Darkening Toolkit (Parviainen 2015)
 
 # --- MCMC / Uncertainty ---
 emcee>=3.1.4               # Affine-invariant MCMC sampler

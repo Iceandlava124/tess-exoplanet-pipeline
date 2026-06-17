@@ -27,7 +27,7 @@ KAGGLE_DATASET = "bhavishmehta/tess-exoplanet-discovery-results"
 SESSION_LABEL  = date.today().strftime("%Y-%m-%d")
 TIME_LIMIT_HRS = 8.0
 DISK_LIMIT_GB  = 18
-STARS_PER_RUN  = 800
+STARS_PER_RUN  = 150
 
 # ── ENVIRONMENT PATHS ────────────────────────────────────────
 WORKING_DIR = Path("/kaggle/working") if os.path.exists("/kaggle") else Path(".").resolve()
@@ -53,7 +53,7 @@ except ImportError:
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-q",
              "lightkurve", "wotan", "batman-package", "astropy", "astroquery",
-             "transitleastsquares", "scipy", "scikit-learn", "imbalanced-learn", "tqdm", "joblib",
+             "transitleastsquares", "ldtk", "scipy", "scikit-learn", "imbalanced-learn", "tqdm", "joblib",
              "pandas", "numpy"],
             check=True, capture_output=True
         )
