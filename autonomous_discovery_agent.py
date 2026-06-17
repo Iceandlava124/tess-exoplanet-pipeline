@@ -53,7 +53,7 @@ except ImportError:
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-q",
              "lightkurve", "wotan", "batman-package", "astropy", "astroquery",
-             "scipy", "scikit-learn", "imbalanced-learn", "tqdm", "joblib",
+             "transitleastsquares", "scipy", "scikit-learn", "imbalanced-learn", "tqdm", "joblib",
              "pandas", "numpy"],
             check=True, capture_output=True
         )
@@ -114,11 +114,17 @@ try:
         print("Loading models, target catalogs, and cached queries...")
         for m in ["random_forest.pkl", "cnn_classifier.h5"]:
             if (INPUT_DIR / m).exists():
+                os.makedirs(PIPELINE_DIR / "models", exist_ok=True)
                 shutil.copy2(INPUT_DIR / m, WORKING_DIR / "models" / m)
+                shutil.copy2(INPUT_DIR / m, PIPELINE_DIR / "models" / m)
         if (INPUT_DIR / "training_targets.csv").exists():
+            os.makedirs(PIPELINE_DIR / "data", exist_ok=True)
             shutil.copy2(INPUT_DIR / "training_targets.csv", WORKING_DIR / "data" / "training_targets.csv")
+            shutil.copy2(INPUT_DIR / "training_targets.csv", PIPELINE_DIR / "data" / "training_targets.csv")
         if (INPUT_DIR / "pipeline_cache.db").exists():
+            os.makedirs(PIPELINE_DIR / "data", exist_ok=True)
             shutil.copy2(INPUT_DIR / "pipeline_cache.db", WORKING_DIR / "data" / "pipeline_cache.db")
+            shutil.copy2(INPUT_DIR / "pipeline_cache.db", PIPELINE_DIR / "data" / "pipeline_cache.db")
         print("SUCCESS: Resources loaded.")
 except Exception as e:
     print(f"Warning loading resources: {e}")
