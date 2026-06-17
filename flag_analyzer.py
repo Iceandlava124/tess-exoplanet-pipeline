@@ -1090,7 +1090,7 @@ def update_results_csv(tic_id: int, verdict: str, note: str):
         return
 
     try:
-        df = pd.read_csv(results_path)
+        df = pd.read_csv(results_path, on_bad_lines='skip')
         mask = df["tic_id"] == tic_id
         if mask.any():
             df.loc[mask, "decision"]     = verdict

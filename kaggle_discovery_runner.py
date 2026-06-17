@@ -888,6 +888,28 @@ def _run_single_star(
         # Save report JSON
         report_path = None
         try:
+            def _clean_for_json(obj):
+                if isinstance(obj, dict):
+                    return {k: _clean_for_json(v) for k, v in obj.items() if k != "raw_results" and not k.startswith("_")}
+                elif isinstance(obj, list):
+                    return [_clean_for_json(x) for x in obj]
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, (np.integer, np.int64, np.int32, np.int16, np.int8)):
+                    return int(obj)
+                elif isinstance(obj, (np.floating, np.float64, np.float32, np.float16)):
+                    return float(obj)
+                elif isinstance(obj, np.bool_):
+                    return bool(obj)
+                elif hasattr(obj, "tolist"):
+                    return obj.tolist()
+                else:
+                    try:
+                        json.dumps(obj)
+                        return obj
+                    except TypeError:
+                        return str(obj)
+
             report = {
                 "tic_id": tic_id, "session_label": session_label,
                 "decision": verdict, "classification": classification,
@@ -895,11 +917,12 @@ def _run_single_star(
                 "bls_parameters": bls_params,
                 "reverse_results": reverse_results,
             }
+            clean_report = _clean_for_json(report)
             report_dir = os.path.join(output_dir, "reports")
             os.makedirs(report_dir, exist_ok=True)
             report_path = os.path.join(report_dir, f"TIC_{tic_id}_report.json")
             with open(report_path, "w", encoding="utf-8") as f:
-                json.dump(report, f, indent=2)
+                json.dump(clean_report, f, indent=2)
         except Exception as e:
             logger.warning(f"TIC {tic_id} -- Step 12: Report save failed ({e})")
 
@@ -1125,7 +1148,7 @@ def run_discovery_session(
     if run_candidate_export:
         try:
             if os.path.isfile(results_csv):
-                df = pd.read_csv(results_csv)
+                df = pd.read_csv(results_csv, on_bad_lines='skip')
                 candidates = df[df["decision"] == "KEEP"].copy()
                 candidates.to_csv(
                     os.path.join(output_dir, "candidates_submission.csv"),
@@ -1198,7 +1221,7 @@ def generate_session_summary(
     df_all = None
     try:
         if os.path.isfile(results_csv):
-            df_all = pd.read_csv(results_csv)
+            df_all = pd.read_csv(results_csv, on_bad_lines='skip')
     except Exception as e:
         logger.warning(f"Could not load results.csv: {e}")
 
