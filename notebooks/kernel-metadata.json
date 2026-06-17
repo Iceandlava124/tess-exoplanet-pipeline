@@ -1,0 +1,15 @@
+{
+  "id": "bhavishmehta/tess-weekly-exoplanet-runner",
+  "title": "TESS Weekly Exoplanet Runner",
+  "code_file": "tess_weekly_runner.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": "false",
+  "enable_gpu": "true",
+  "enable_tpu": "false",
+  "enable_internet": "true",
+  "dataset_sources": [
+    "bhavishmehta/exoplanet-pipeline-resources",
+    "bhavishmehta/tess-exoplanet-discovery-results"
+  ]
+}
