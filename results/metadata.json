@@ -1,17 +1,16 @@
 {
     "module": "flag_analyzer",
     "version": "1.0.0",
-    "run_timestamp": "2026-06-16T16:10:03.465637",
-    "n_input_flags": 16,
-    "n_upgraded_to_keep": 1,
-    "n_downgraded_to_discard": 6,
-    "n_remained_flag": 9,
+    "run_timestamp": "2026-06-17T18:53:38.972498",
+    "n_input_flags": 1,
+    "n_upgraded_to_keep": 0,
+    "n_downgraded_to_discard": 1,
+    "n_remained_flag": 0,
     "output_files": {
         "analysis_csv": "C:\\Users\\gudae\\Desktop\\Learn_ml\\results\\flag_analysis_results.csv",
         "keep_folder": "C:\\Users\\gudae\\Desktop\\Learn_ml\\results\\KEEP",
         "flag_folder": "C:\\Users\\gudae\\Desktop\\Learn_ml\\results\\FLAG",
         "discard_folder": "C:\\Users\\gudae\\Desktop\\Learn_ml\\results\\DISCARD",
         "plots_folder": "C:\\Users\\gudae\\Desktop\\Learn_ml\\results\\plots\\flag_analysis"
-    },
-    "pipeline_version": "2.0"
+    }
 }

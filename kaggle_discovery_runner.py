@@ -184,19 +184,37 @@ def build_target_list(
     logger.info(f"Querying TESS Input Catalog for up to {n_targets} targets...")
 
     # ── Query TIC via astroquery ──────────────────────────────────────────────
+    # ── Query TIC via direct MAST API with strict 15s timeout ─────────────────
     try:
-        from astroquery.mast import conf as mast_conf
-        mast_conf.timeout = 20
-        from astroquery.mast import Catalogs
-        catalog = Catalogs.query_criteria(
-            catalog    = "TIC",
-            Tmag       = list(mag_range),
-            Teff       = list(teff_range),
-            rad        = list(radius_range),
-            objType    = "STAR",
-            pagesize   = max(2000, n_targets * 3),
-        )
-        df = catalog.to_pandas()
+        import urllib.request
+        import json
+        
+        url = "https://mast.stsci.edu/api/v0/invoke"
+        payload = {
+            "service": "Mast.Catalogs.Filtered.Tic",
+            "format": "json",
+            "params": {
+                "columns": "ID,ra,dec,Tmag,Teff,rad,logg,contratio,priority,wdflag",
+                "filters": [
+                    {"paramName": "Tmag", "values": [{"min": float(mag_range[0]), "max": float(mag_range[1])}]},
+                    {"paramName": "Teff", "values": [{"min": float(teff_range[0]), "max": float(teff_range[1])}]},
+                    {"paramName": "rad", "values": [{"min": float(radius_range[0]), "max": float(radius_range[1])}]},
+                    {"paramName": "objType", "values": ["STAR"]}
+                ],
+                "pagesize": int(max(2000, n_targets * 3))
+            }
+        }
+        
+        req_data = f"request={json.dumps(payload)}".encode("utf-8")
+        req = urllib.request.Request(url, data=req_data, headers={'User-Agent': 'Mozilla/5.0'})
+        
+        logger.info("Sending request to MAST REST API...")
+        with urllib.request.urlopen(req, timeout=15) as response:
+            res = json.loads(response.read().decode('utf-8'))
+            if "data" not in res:
+                raise ValueError("No data field in MAST REST response")
+            df = pd.DataFrame(res["data"])
+            
         required_cols = ["ID", "ra", "dec", "Tmag", "Teff", "rad", "logg",
                          "contratio", "priority", "wdflag"]
         existing_cols = [c for c in required_cols if c in df.columns]
