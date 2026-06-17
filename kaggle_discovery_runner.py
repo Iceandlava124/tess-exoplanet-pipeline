@@ -37,9 +37,100 @@ logger = logging.getLogger("kaggle_runner")
 TESS_ALIAS_PERIODS = [0.5, 1.0, 2.0, 13.5]
 ALIAS_TOLERANCE    = 0.01
 
+_TOI_TIC_IDS = None
+
+
+def _load_toi_catalog() -> set:
+    global _TOI_TIC_IDS
+    if _TOI_TIC_IDS is not None:
+        return _TOI_TIC_IDS
+    
+    _TOI_TIC_IDS = set()
+    logger.info("Loading TOI catalog from Caltech TAP...")
+    try:
+        import urllib.request
+        url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?query=select+tid+from+toi&format=csv'
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            lines = response.read().decode('utf-8').splitlines()
+            if lines:
+                header = lines[0].split(',')
+                try:
+                    tid_idx = header.index('tid')
+                    for line in lines[1:]:
+                        if not line.strip():
+                            continue
+                        parts = line.split(',')
+                        if len(parts) > tid_idx:
+                            val = parts[tid_idx].strip().replace('"', '')
+                            if val:
+                                _TOI_TIC_IDS.add(int(float(val)))
+                except ValueError:
+                    logger.warning("tid column not found in Caltech TOI query header.")
+        logger.info(f"Successfully loaded {len(_TOI_TIC_IDS)} TOIs from Caltech TAP.")
+    except Exception as e:
+        logger.warning(f"Caltech TAP TOI query failed: {e}. Trying ExoFOP fallback.")
+        try:
+            import urllib.request
+            url = "https://exofop.ipac.caltech.edu/tess/download_toi.php?sort=toi&output=csv"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                lines = response.read().decode('utf-8').splitlines()
+                if lines:
+                    header = lines[0].split(',')
+                    try:
+                        tic_idx = -1
+                        for i, col in enumerate(header):
+                            if "tic" in col.lower() or "id" in col.lower():
+                                tic_idx = i
+                                break
+                        if tic_idx != -1:
+                            for line in lines[1:]:
+                                if not line.strip():
+                                    continue
+                                parts = line.split(',')
+                                if len(parts) > tic_idx:
+                                    val = parts[tic_idx].strip().replace('"', '')
+                                    if val:
+                                        _TOI_TIC_IDS.add(int(float(val)))
+                    except Exception as ex:
+                        logger.warning(f"ExoFOP parsing error: {ex}")
+            logger.info(f"Loaded {len(_TOI_TIC_IDS)} TOIs from ExoFOP fallback.")
+        except Exception as e2:
+            logger.warning(f"ExoFOP fallback failed: {e2}")
+            
+    if not _TOI_TIC_IDS:
+        local_toi_files = [
+            Path("data/xctl/toi_catalog.csv"),
+            Path("pipeline/data/xctl/toi_catalog.csv"),
+            Path(__file__).parent / "data/xctl/toi_catalog.csv"
+        ]
+        if os.path.exists("/kaggle/input"):
+            for root, dirs, files in os.walk("/kaggle/input"):
+                for file in files:
+                    if file == "toi_catalog.csv":
+                        local_toi_files.append(Path(root) / file)
+        
+        for lf in local_toi_files:
+            if lf.exists():
+                try:
+                    df_lf = pd.read_csv(lf)
+                    for col in df_lf.columns:
+                        if "tic" in col.lower() or "tid" in col.lower():
+                            _TOI_TIC_IDS.update(df_lf[col].dropna().astype(int).tolist())
+                            logger.info(f"Loaded {len(_TOI_TIC_IDS)} TOIs from local file {lf}")
+                            break
+                    if _TOI_TIC_IDS:
+                        break
+                except Exception as lf_err:
+                    logger.warning(f"Failed to read local TOI fallback {lf}: {lf_err}")
+                    
+    return _TOI_TIC_IDS
+
 
 def _is_alias(period: float) -> bool:
     return any(abs(period - a) < ALIAS_TOLERANCE for a in TESS_ALIAS_PERIODS)
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -129,6 +220,23 @@ def build_target_list(
             Path("pipeline/data/test_targets.csv"),
             Path("pipeline/data/validation_targets.csv")
         ]
+        # Check relative to script path
+        script_dir = Path(__file__).parent
+        local_files.extend([
+            script_dir / "data/training_targets.csv",
+            script_dir / "data/test_targets.csv",
+            script_dir / "data/validation_targets.csv",
+            script_dir / "pipeline/data/training_targets.csv",
+            script_dir / "pipeline/data/test_targets.csv",
+            script_dir / "pipeline/data/validation_targets.csv"
+        ])
+        # Search recursively in /kaggle/input
+        if os.path.exists("/kaggle/input"):
+            for root, dirs, files in os.walk("/kaggle/input"):
+                for file in files:
+                    if file.endswith("targets.csv"):
+                        local_files.append(Path(root) / file)
+                        
         fallback_ids = []
         for lf in local_files:
             for p in [lf, Path(".") / lf, Path("/kaggle/working") / lf]:
@@ -212,11 +320,8 @@ def build_target_list(
     toi_tic_ids = set()
     if prioritise_not_in_toi:
         try:
-            from astroquery.mast import Catalogs as MastCat
-            toi = MastCat.query_criteria(catalog="Exo.Mast", columns=["tid"])
-            if toi is not None and len(toi) > 0:
-                toi_tic_ids = set(toi["tid"].astype(int).tolist())
-                logger.info(f"TOI catalog loaded: {len(toi_tic_ids)} known targets.")
+            toi_tic_ids = _load_toi_catalog()
+            logger.info(f"TOI catalog loaded: {len(toi_tic_ids)} known targets.")
         except Exception as e:
             logger.warning(f"TOI catalog query failed: {e}")
 
@@ -318,15 +423,12 @@ def _toi_crosscheck(tic_id: int) -> bool:
     Returns True if the star is NOT in the TOI catalog (= potentially new).
     """
     try:
-        from astroquery.mast import Catalogs
-        result = Catalogs.query_criteria(
-            catalog="Exo.Mast",
-            tid=int(tic_id),
-            columns=["tid"],
-        )
-        return result is None or len(result) == 0
-    except Exception:
+        toi_ids = _load_toi_catalog()
+        return int(tic_id) not in toi_ids
+    except Exception as e:
+        logger.warning(f"TOI crosscheck error for TIC {tic_id}: {e}")
         return False   # conservative: assume it is known if query fails
+
 
 
 def _run_single_star(
@@ -373,47 +475,63 @@ def _run_single_star(
         from src.decision_engine  import evaluate_decision, log_to_manual_review_queue
 
         # ── Step 1: Download light curve ─────────────────────────────────────
+        logger.info(f"TIC {tic_id} -- Step 1: Downloading light curve from MAST...")
         raw_dir = os.path.join(output_dir, "raw_fits")
         os.makedirs(raw_dir, exist_ok=True)
 
         # Try 2-minute cadence first, fall back to 30-minute
         fits_path = None
+        resolved_cadence = None
         for cadence in ["short", "long"]:
             try:
                 search = lk.search_lightcurve(
                     f"TIC {tic_id}", mission="TESS", cadence=cadence, limit=1
                 )
                 if search is not None and len(search) > 0:
+                    logger.info(f"TIC {tic_id} -- Step 1: Found {cadence} cadence data. Downloading...")
                     lc_col = search.download_all(download_dir=raw_dir)
                     if lc_col is not None and len(lc_col) > 0:
                         lc_obj = lc_col[0]
                         fits_path = "in_memory"   # we have the lc object
+                        resolved_cadence = cadence
                         break
-            except Exception:
+            except Exception as e_dl:
+                logger.warning(f"TIC {tic_id} -- Step 1: Cadence {cadence} download attempt failed: {e_dl}")
                 continue
 
         if fits_path is None:
+            logger.error(f"TIC {tic_id} -- Step 1: Failed to download light curve from MAST.")
             result["flag_reasons"] = "no_data: could not download from MAST"
             return result
+        logger.info(f"TIC {tic_id} -- Step 1: Light curve downloaded successfully ({resolved_cadence} cadence).")
 
         # ── Step 2: Preprocess ───────────────────────────────────────────────
+        logger.info(f"TIC {tic_id} -- Step 2: Preprocessing light curve...")
         time_arr, flux_arr, flux_err = preprocess_lightcurve(lc_obj)
         quality_flag = "good" if len(time_arr) > 8000 else "poor"
+        logger.info(f"TIC {tic_id} -- Step 2: Preprocessing complete. Data points: {len(time_arr)} (Quality: {quality_flag})")
 
         # ── Step 3: TLS/BLS period search + alias rejection ──────────────────
-        # Plain English: Run Box Least Squares (BLS) in fast mode or Transit Least Squares (TLS) in full analysis mode.
         if fast:
-            logger.info("Fast mode enabled: running Box Least Squares (BLS)...")
+            logger.info(f"TIC {tic_id} -- Step 3: Fast mode enabled. Running Box Least Squares (BLS)...")
             periods, power, bls_params = run_bls(time_arr, flux_arr, flux_err)
         else:
-            logger.info("Full analysis mode: running Transit Least Squares (TLS)...")
+            logger.info(f"TIC {tic_id} -- Step 3: Running Transit Least Squares (TLS)...")
             periods, power, bls_params = run_tls(time_arr, flux_arr, flux_err)
+
+        best_period = bls_params.get("period", 0.0)
+        snr = bls_params.get("snr", 0.0)
+        depth_val = bls_params.get("depth", 0.0)
+        depth_ppm = abs(depth_val) * 1e6
+
+        logger.info(f"TIC {tic_id} -- Step 3: Search complete. Top Period: {best_period:.4f} d, SNR: {snr:.2f}, Depth: {depth_ppm:.0f} ppm")
 
         if alias_rejection and bls_params.get("alias_rejected"):
             reason = (
                 f"alias_discard: top period {bls_params['period']:.4f} d "
                 f"matches TESS systematic alias"
             )
+            logger.warning(f"TIC {tic_id} -- Step 3: Target rejected as systematic alias (P={best_period:.4f} d)")
             result["decision"]        = "DISCARD"
             result["flag_reasons"]    = reason
             result["period"]          = bls_params["period"]
@@ -423,36 +541,41 @@ def _run_single_star(
                       f"P={bls_params['period']:.3f}d")
             return result
 
-        snr = bls_params.get("snr", 0.0)
-        result["period"] = bls_params.get("period", 0.0)
+        result["period"] = best_period
         result["snr"]    = snr
-        result["depth"]  = bls_params.get("depth", 0.0)
+        result["depth"]  = depth_val
 
         # SNR gate
         if snr < min_transit_snr:
+            logger.warning(f"TIC {tic_id} -- Step 3: SNR {snr:.2f} < threshold {min_transit_snr}. Discarding.")
             result["flag_reasons"] = f"low_snr: {snr:.2f} < {min_transit_snr}"
             _log_star(log_file, tic_id, "DISCARD", f"SNR={snr:.1f}")
             return result
 
         # Depth gate (ppm)
-        depth_ppm = abs(bls_params.get("depth", 0.0)) * 1e6
         if depth_ppm < min_depth_ppm:
+            logger.warning(f"TIC {tic_id} -- Step 3: Depth {depth_ppm:.0f} ppm < threshold {min_depth_ppm} ppm. Discarding.")
             result["flag_reasons"] = f"shallow_transit: {depth_ppm:.0f} ppm < {min_depth_ppm} ppm"
             _log_star(log_file, tic_id, "DISCARD", f"depth={depth_ppm:.0f}ppm")
             return result
 
         # ── Step 4: Feature extraction ────────────────────────────────────────
+        logger.info(f"TIC {tic_id} -- Step 4: Extracting light curve features...")
         features = extract_features(time_arr, flux_arr, flux_err, bls_params)
+        logger.info(f"TIC {tic_id} -- Step 4: Feature extraction complete ({len(features)} features extracted).")
 
         # ── Step 5: Forward pipeline (RF + CNN) ───────────────────────────────
+        logger.info(f"TIC {tic_id} -- Step 5: Running Machine Learning classifiers (RF + CNN)...")
         phase_arr, folded_flux = fold_lightcurve(
             time_arr, flux_arr, bls_params["period"], bls_params["t0"]
         )
         classification = classify_target(features, folded_flux)
         result["final_class"] = classification.get("label_name", "Unknown")
         result["confidence"]  = classification.get("confidence", 0.0)
+        logger.info(f"TIC {tic_id} -- Step 5: ML Classification: {result['final_class']} (Confidence: {result['confidence']:.2%})")
 
         # ── Step 6: Batman fitting + radius plausibility ──────────────────────
+        logger.info(f"TIC {tic_id} -- Step 6: Fitting transit model using batman...")
         # Determine sector from light curve metadata
         sector_val = None
         try:
@@ -468,24 +591,8 @@ def _run_single_star(
                 else:
                     sector_val = int(sector_val)
         except Exception as se_err:
-            logger.warning(f"Failed to resolve sector value: {se_err}")
+            logger.warning(f"TIC {tic_id} -- Step 6: Failed to resolve sector value: {se_err}")
             sector_val = None
-
-        # Plain English: Run the pixel contamination check (Test 9) unless running in fast mode.
-        contamination_res = {"contaminated": False, "contamination_ratio": None, "n_nearby_gaia_stars": 0}
-        if not fast:
-            logger.info("Running pixel-level contamination check...")
-            try:
-                from flag_analyzer import check_pixel_contamination
-                contamination_res = check_pixel_contamination(
-                    tic_id=tic_id,
-                    sector=sector_val,
-                    period=bls_params["period"],
-                    epoch=bls_params["t0"],
-                    duration=bls_params["duration"]
-                )
-            except Exception as e:
-                logger.warning(f"Pixel contamination check failed: {e}")
 
         # Add tic_id to bls_params for stellar parameter lookup inside fit_batman_transit
         bls_params["tic_id"] = tic_id
@@ -497,6 +604,7 @@ def _run_single_star(
         result["period"]         = transit_params.get("period", result["period"])
         result["depth"]          = transit_params.get("transit_depth", result["depth"])
         result["duration"]       = transit_params.get("transit_duration_hr", 0.0) / 24.0
+        logger.info(f"TIC {tic_id} -- Step 6: Batman fit complete. Fitted Radius: {rp_earth:.2f} R_earth")
 
         # Radius plausibility check
         radius_flag = None
@@ -504,19 +612,43 @@ def _run_single_star(
         if rp_earth < 0.5:
             radius_flag = "too_small_flag"
             radius_note = f"Fitted radius {rp_earth:.2f} R_earth below TESS sensitivity limit."
+            logger.warning(f"TIC {tic_id} -- Step 6: fitted radius too small: {rp_earth:.2f} R_earth")
         elif rp_earth > 100.0:
             radius_flag = "almost_certainly_eb"
             radius_note = (f"Fitted radius {rp_earth:.1f} R_earth in stellar range (>100). "
                            f"Almost certainly an eclipsing binary.")
+            logger.warning(f"TIC {tic_id} -- Step 6: fitted radius in stellar range: {rp_earth:.1f} R_earth")
         elif rp_earth > max_planet_radius_earth:
             radius_flag = "giant_radius_eb_suspect"
             radius_note = (f"Fitted radius {rp_earth:.1f} R_earth exceeds {max_planet_radius_earth} R_earth. "
                            f"Likely eclipsing binary or blended EB. Recommend EB catalog cross-check.")
+            logger.warning(f"TIC {tic_id} -- Step 6: fitted radius too large: {rp_earth:.1f} R_earth")
 
-        # ── Step 7: Reverse pipeline ──────────────────────────────────────────
+        # ── Step 7: Pixel Contamination Check ─────────────────────────────────
+        contamination_res = {"contaminated": False, "contamination_ratio": None, "n_nearby_gaia_stars": 0}
+        if not fast:
+            logger.info(f"TIC {tic_id} -- Step 7: Running pixel-level contamination check...")
+            try:
+                from flag_analyzer import check_pixel_contamination
+                contamination_res = check_pixel_contamination(
+                    tic_id=tic_id,
+                    sector=sector_val,
+                    period=bls_params["period"],
+                    epoch=bls_params["t0"],
+                    duration=bls_params["duration"]
+                )
+                logger.info(f"TIC {tic_id} -- Step 7: Contamination check complete. Contaminated: {contamination_res.get('contaminated')} (Ratio: {contamination_res.get('contamination_ratio')})")
+            except Exception as e:
+                logger.warning(f"TIC {tic_id} -- Step 7: Pixel contamination check failed: {e}")
+        else:
+            logger.info(f"TIC {tic_id} -- Step 7: Fast mode enabled. Skipping pixel contamination check.")
+
+        # ── Step 8: Reverse pipeline ──────────────────────────────────────────
+        logger.info(f"TIC {tic_id} -- Step 8: Running reverse pipeline vetting...")
         reverse_results = run_reverse_pipeline(
             time_arr, flux_arr, flux_err, bls_params
         )
+        logger.info(f"TIC {tic_id} -- Step 8: Reverse pipeline vetting complete.")
 
         # Determine consistent sector count using lightkurve search
         n_sectors_consistent = 1
@@ -528,44 +660,16 @@ def _run_single_star(
         except Exception:
             pass
 
-        # ── Step 8: Cross-check + three-tier decision ─────────────────────────
+        # ── Step 9: Vetting / FPP Calculation ────────────────────────────────
+        fpp_res = {"fpp": None, "combined_fpp": None, "fpp_status": "skipped"}
+        # Evaluate initial decision first so we know if we need FPP (FPP only for KEEP)
         decision_res = evaluate_decision(
             classification, reverse_results, bls_params, quality_flag,
             forward_fit=transit_params, n_sectors_consistent=n_sectors_consistent
         )
 
-        # Apply radius overrides AFTER decision (radius evidence always wins)
-        if radius_flag in ("giant_radius_eb_suspect", "almost_certainly_eb"):
-            original_label = classification.get("label_name", "Unknown")
-            classification["label"] = 3
-            classification["label_name"] = "Eclipsing Binary"
-            classification["confidence"] = 0.0
-            decision_res["decision"]            = "DISCARD"
-            decision_res["combined_confidence"] = 0.0
-            decision_res["flag_reasons"] = f"[{radius_flag}] {radius_note} (original ML label was: {original_label})"
-        elif radius_flag == "too_small_flag":
-            existing = decision_res.get("flag_reasons", "")
-            decision_res["flag_reasons"] = f"[too_small_flag] {radius_note}" + (f"; {existing}" if existing else "")
-
-        # Apply pixel contamination overrides
-        if contamination_res.get("contaminated") is True:
-            is_borderline = (decision_res["decision"] == "FLAG") or (decision_res["decision"] == "KEEP" and decision_res["combined_confidence"] < 0.75)
-            if rp_earth > 25.0:
-                classification["label"] = 3
-                classification["label_name"] = "Eclipsing Binary"
-                decision_res["decision"] = "DISCARD"
-                decision_res["combined_confidence"] = 0.0
-                decision_res["flag_reasons"] = "giant_radius_plus_contamination — almost certainly blend"
-                logger.warning("Contamination override: giant radius + pixel contamination. Forced to DISCARD.")
-            elif is_borderline:
-                decision_res["decision"] = "FLAG"
-                decision_res["flag_reasons"] = "pixel_contamination_detected"
-                logger.warning("Contamination override: borderline signal + pixel contamination. Forced to FLAG.")
-
-        # False Positive Probability (FPP) calculation (only for KEEP decisions)
-        fpp_res = {"fpp": None, "combined_fpp": None, "fpp_status": "skipped"}
         if decision_res["decision"] == "KEEP" and not fast:
-            logger.info("Running TRICERATOPS False Positive Probability calculation...")
+            logger.info(f"TIC {tic_id} -- Step 9: Running TRICERATOPS False Positive Probability calculation...")
             try:
                 from src.fpp_calculator import calculate_fpp
                 fpp_res = calculate_fpp(
@@ -581,14 +685,48 @@ def _run_single_star(
                 fpp = fpp_res.get("fpp")
                 combined_fpp = fpp_res.get("combined_fpp")
                 fpp_status = fpp_res.get("fpp_status")
+                logger.info(f"TIC {tic_id} -- Step 9: FPP complete. FPP: {fpp}, Combined FPP: {combined_fpp} ({fpp_status})")
                 
                 if combined_fpp is not None:
                     if combined_fpp > 0.5:
-                        logger.warning(f"High false positive probability ({combined_fpp:.2f} > 0.5). Downgrading KEEP to FLAG.")
+                        logger.warning(f"TIC {tic_id} -- Step 9: High false positive probability ({combined_fpp:.2f} > 0.5). Downgrading KEEP to FLAG.")
                         decision_res["decision"] = "FLAG"
                         decision_res["flag_reasons"] = f"High false positive probability: {fpp:.2f}"
             except Exception as e:
-                logger.warning(f"FPP calculation failed: {e}")
+                logger.warning(f"TIC {tic_id} -- Step 9: FPP calculation failed: {e}")
+        else:
+            logger.info(f"TIC {tic_id} -- Step 9: Skipping FPP calculation (Verdict: {decision_res['decision']}).")
+
+        # ── Step 10: Vetting / Decision Engine ────────────────────────────────
+        logger.info(f"TIC {tic_id} -- Step 10: Evaluating final decision using decision engine...")
+        # Apply radius overrides AFTER decision (radius evidence always wins)
+        if radius_flag in ("giant_radius_eb_suspect", "almost_certainly_eb"):
+            original_label = classification.get("label_name", "Unknown")
+            classification["label"] = 3
+            classification["label_name"] = "Eclipsing Binary"
+            classification["confidence"] = 0.0
+            decision_res["decision"]            = "DISCARD"
+            decision_res["combined_confidence"] = 0.0
+            decision_res["flag_reasons"] = f"[{radius_flag}] {radius_note} (original ML label was: {original_label})"
+            logger.info(f"TIC {tic_id} -- Step 10: Radius override applied. Forced to DISCARD.")
+        elif radius_flag == "too_small_flag":
+            existing = decision_res.get("flag_reasons", "")
+            decision_res["flag_reasons"] = f"[too_small_flag] {radius_note}" + (f"; {existing}" if existing else "")
+
+        # Apply pixel contamination overrides
+        if contamination_res.get("contaminated") is True:
+            is_borderline = (decision_res["decision"] == "FLAG") or (decision_res["decision"] == "KEEP" and decision_res["combined_confidence"] < 0.75)
+            if rp_earth > 25.0:
+                classification["label"] = 3
+                classification["label_name"] = "Eclipsing Binary"
+                decision_res["decision"] = "DISCARD"
+                decision_res["combined_confidence"] = 0.0
+                decision_res["flag_reasons"] = "giant_radius_plus_contamination — almost certainly blend"
+                logger.warning(f"TIC {tic_id} -- Step 10: Contamination override: giant radius + pixel contamination. Forced to DISCARD.")
+            elif is_borderline:
+                decision_res["decision"] = "FLAG"
+                decision_res["flag_reasons"] = "pixel_contamination_detected"
+                logger.warning(f"TIC {tic_id} -- Step 10: Contamination override: borderline signal + pixel contamination. Forced to FLAG.")
 
         verdict    = decision_res["decision"]
         confidence = decision_res["combined_confidence"]
@@ -605,21 +743,23 @@ def _run_single_star(
         result["n_nearby_gaia_stars"] = contamination_res.get("n_nearby_gaia_stars")
         result["n_sectors_consistent"] = n_sectors_consistent
 
-        # ── Step 9 (optional): Flag deep-analysis ─────────────────────────────
+        logger.info(f"TIC {tic_id} -- Step 10: Decision engine completed. Final Verdict: {verdict} (Confidence: {confidence:.2%})")
+
+        # Step 10 Flag Deep-Analysis (if flagged)
         if verdict == "FLAG" and run_flag_analyzer:
+            logger.info(f"TIC {tic_id} -- Step 10: Running flag deep-analysis...")
             try:
                 from flag_analyzer import run_flag_analysis
                 fa_result = run_flag_analysis(tic_ids=[tic_id])
-                # If upgraded/downgraded, update verdict
                 if fa_result.get("upgraded", 0) > 0:
                     verdict = "KEEP"
                 elif fa_result.get("downgraded", 0) > 0:
                     verdict = "DISCARD"
                 result["decision"] = verdict
+                logger.info(f"TIC {tic_id} -- Step 10: Flag deep-analysis complete. Final decision updated to: {verdict}")
             except Exception as e:
-                logger.warning(f"TIC {tic_id}: flag_analyzer failed ({e}) — keeping FLAG")
+                logger.warning(f"TIC {tic_id} -- Step 10: Flag deep-analysis failed ({e}) — keeping FLAG")
 
-            # Log to manual review queue for remaining FLAGs
             if verdict == "FLAG":
                 try:
                     log_to_manual_review_queue(
@@ -630,14 +770,18 @@ def _run_single_star(
                 except Exception:
                     pass
 
-        # ── Step 10 (optional): TOI cross-check ──────────────────────────────
+        # ── Step 11: TOI Cross-Check ──────────────────────────────────────────
+        logger.info(f"TIC {tic_id} -- Step 11: Running TOI catalog cross-check...")
         is_new = False
         if run_toi_crosscheck and verdict == "KEEP":
             try:
                 is_new = _toi_crosscheck(tic_id)
                 result["is_new_discovery"] = is_new
-            except Exception:
-                pass
+                logger.info(f"TIC {tic_id} -- Step 11: TOI cross-check complete. Potential New Discovery: {is_new}")
+            except Exception as e:
+                logger.warning(f"TIC {tic_id} -- Step 11: TOI cross-check failed: {e}")
+        else:
+            logger.info(f"TIC {tic_id} -- Step 11: Skipping TOI cross-check (Verdict: {verdict}).")
 
         if is_new:
             new_file = os.path.join(output_dir, "new_discoveries.txt")
@@ -671,9 +815,10 @@ def _run_single_star(
             m_model = batman.TransitModel(params, time_grid)
             folded_model = m_model.light_curve(params)
         except Exception as e:
-            logger.warning(f"Failed to generate folded model curve: {e}")
+            logger.warning(f"TIC {tic_id} -- Step 11: Failed to generate folded model curve: {e}")
 
-        # ── Step 11: Save plots for KEEP and FLAG ─────────────────────────────
+        # ── Step 12: Diagnostic Plots & Report JSON saving ───────────────────
+        logger.info(f"TIC {tic_id} -- Step 12: Generating diagnostic plots and saving report...")
         plot_path = None
         if verdict in ("KEEP", "FLAG"):
             try:
@@ -700,7 +845,7 @@ def _run_single_star(
                     output_dir, "figures", f"TIC_{tic_id}_diagnostic.png"
                 )
             except Exception as e:
-                logger.warning(f"TIC {tic_id}: plot failed ({e})")
+                logger.warning(f"TIC {tic_id} -- Step 12: Plot generation failed: {e}")
 
         # Save report JSON
         report_path = None
@@ -718,7 +863,7 @@ def _run_single_star(
             with open(report_path, "w", encoding="utf-8") as f:
                 json.dump(report, f, indent=2)
         except Exception as e:
-            logger.warning(f"TIC {tic_id}: report save failed ({e})")
+            logger.warning(f"TIC {tic_id} -- Step 12: Report save failed ({e})")
 
         # Copy to verdict folder
         try:
@@ -730,13 +875,16 @@ def _run_single_star(
         detail = (f"{result['final_class']}, {confidence*100:.0f}%, "
                   f"P={result['period']:.3f}d")
         _log_star(log_file, tic_id, verdict, detail)
+        logger.info(f"TIC {tic_id} -- Step 12: Diagnostic plots and report saved.")
 
     except Exception as e:
-        logger.error(f"TIC {tic_id}: pipeline crashed — {e}")
+        logger.error(f"TIC {tic_id} -- Pipeline crashed: {e}")
         result["flag_reasons"] = f"pipeline_error: {e}"
         _log_star(log_file, tic_id, "ERROR", str(e)[:60])
 
     finally:
+        # ── Step 13: Cleanup ──────────────────────────────────────────────────
+        logger.info(f"TIC {tic_id} -- Step 13: Cleaning up temporary FITS files...")
         # Always delete raw FITS files to conserve disk space
         try:
             if fits_path and fits_path != "in_memory":
@@ -758,8 +906,10 @@ def _run_single_star(
                             pass
         except Exception:
             pass
+        logger.info(f"TIC {tic_id} -- Step 13: Cleanup complete.")
 
     return result
+
 
 
 def run_discovery_session(
