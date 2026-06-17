@@ -33,8 +33,15 @@ STARS_PER_RUN  = 400
 WORKING_DIR = Path("/kaggle/working") if os.path.exists("/kaggle") else Path(".").resolve()
 PIPELINE_DIR = WORKING_DIR / "pipeline"
 RESULTS_DIR  = WORKING_DIR / "results"
-INPUT_DIR   = Path("/kaggle/input/exoplanet-pipeline-resources")
-INPUT_RESULTS_DIR = Path("/kaggle/input/tess-exoplanet-discovery-results")
+def find_kaggle_input_dir(slug: str) -> Path:
+    if os.path.exists("/kaggle/input"):
+        for root, dirs, files in os.walk("/kaggle/input"):
+            if slug in Path(root).name:
+                return Path(root)
+    return Path("/kaggle/input") / slug
+
+INPUT_DIR = find_kaggle_input_dir("exoplanet-pipeline-resources")
+INPUT_RESULTS_DIR = find_kaggle_input_dir("tess-exoplanet-discovery-results")
 
 print("=" * 70)
 print("STARTING AUTONOMOUS DISCOVERY AGENT")
