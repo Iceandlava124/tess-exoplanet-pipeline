@@ -78,6 +78,15 @@ def build_target_list(
     Returns:
         DataFrame with columns: tic_id, ra, dec, tmag, teff, radius, n_sectors, priority_score
     """
+    # Force logger to output to stdout for visibility in Kaggle logs/notebooks
+    import sys
+    logger.setLevel(logging.INFO)
+    for h in list(logger.handlers):
+        logger.removeHandler(h)
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+    logger.addHandler(sh)
+
     if already_processed is None:
         already_processed = set()
 
@@ -85,6 +94,8 @@ def build_target_list(
 
     # ── Query TIC via astroquery ──────────────────────────────────────────────
     try:
+        from astroquery.mast import conf as mast_conf
+        mast_conf.timeout = 20
         from astroquery.mast import Catalogs
         catalog = Catalogs.query_criteria(
             catalog    = "TIC",
@@ -110,7 +121,44 @@ def build_target_list(
         logger.info(f"TIC query returned {len(df)} raw candidates.")
     except Exception as e:
         logger.error(f"TIC query failed: {e}. Falling back to cached list.")
-        # Graceful fallback: return an empty dataframe with correct columns
+        local_files = [
+            Path("data/training_targets.csv"),
+            Path("data/test_targets.csv"),
+            Path("data/validation_targets.csv"),
+            Path("pipeline/data/training_targets.csv"),
+            Path("pipeline/data/test_targets.csv"),
+            Path("pipeline/data/validation_targets.csv")
+        ]
+        fallback_ids = []
+        for lf in local_files:
+            for p in [lf, Path(".") / lf, Path("/kaggle/working") / lf]:
+                if p.exists():
+                    try:
+                        df_lf = pd.read_csv(p)
+                        if "tic_id" in df_lf.columns:
+                            fallback_ids.extend(df_lf["tic_id"].astype(int).tolist())
+                    except Exception as e_lf:
+                        logger.warning(f"Could not read local targets from {p}: {e_lf}")
+        
+        fallback_ids = list(set(fallback_ids))
+        if fallback_ids:
+            logger.info(f"Loaded {len(fallback_ids)} targets from local fallback catalogs.")
+            fallback_ids = [t for t in fallback_ids if t not in already_processed]
+            logger.info(f"Remaining after excluding already processed: {len(fallback_ids)}")
+            
+            selected_ids = fallback_ids[:n_targets]
+            df_fallback = pd.DataFrame({
+                "tic_id": selected_ids,
+                "ra": [0.0] * len(selected_ids),
+                "dec": [0.0] * len(selected_ids),
+                "tmag": [10.0] * len(selected_ids),
+                "teff": [5778.0] * len(selected_ids),
+                "radius": [1.0] * len(selected_ids),
+                "n_sectors": [1] * len(selected_ids),
+                "priority_score": [1.0] * len(selected_ids)
+            })
+            return df_fallback
+        
         return pd.DataFrame(columns=["tic_id", "ra", "dec", "tmag", "teff",
                                      "radius", "n_sectors", "priority_score"])
 
@@ -741,6 +789,15 @@ def run_discovery_session(
 
     Returns a summary dict with counts for the session.
     """
+    # Force logger to output to stdout for visibility in Kaggle logs/notebooks
+    import sys
+    logger.setLevel(logging.INFO)
+    for h in list(logger.handlers):
+        logger.removeHandler(h)
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+    logger.addHandler(sh)
+
     if not session_label:
         session_label = datetime.now().strftime("%Y-%m-%d")
     if not log_file:
