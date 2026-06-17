@@ -84,7 +84,7 @@ try:
             raise RuntimeError(result.stderr.strip())
         print("SUCCESS: Pipeline cloned.")
 except Exception as e:
-    print(f"❌ Failed to load source code: {e}")
+    print(f"[ERROR] Failed to load source code: {e}")
     sys.exit(1)
 
 # Add pipeline folders to Python path
@@ -125,9 +125,9 @@ try:
         df_previous = pd.read_csv(OUTPUT_RESULTS_CSV)
         if "tic_id" in df_previous.columns:
             already_done = set(df_previous["tic_id"].astype(int).tolist())
-        print(f"📂 Resuming: loaded {len(already_done)} unique processed stars.")
+        print(f"[LOAD] Resuming: loaded {len(already_done)} unique processed stars.")
     else:
-        print("🆕 Fresh start: no previous results file found.")
+        print("[INFO] Fresh start: no previous results file found.")
 except Exception as e:
     print(f"Warning resuming progress: {e}")
 
@@ -151,9 +151,9 @@ try:
         prioritise_not_in_toi      = True,
     )
     targets.to_csv(TARGETS_CSV, index=False)
-    print(f"🎯 Queued {len(targets)} stars for analysis.")
+    print(f"[INFO] Queued {len(targets)} stars for analysis.")
 except Exception as e:
-    print(f"❌ Failed to build target catalog: {e}")
+    print(f"[ERROR] Failed to build target catalog: {e}")
     targets = pd.DataFrame(columns=["tic_id"])
 
 # ── 6. AUTONOMOUS PIPELINE VETTING ───────────────────────────
@@ -162,7 +162,7 @@ from kaggle_discovery_runner import run_discovery_session
 
 session_summary = {}
 if len(targets) == 0:
-    print("❌ No targets to process. Exiting.")
+    print("[ERROR] No targets to process. Exiting.")
     sys.exit(0)
 
 print("\nStarting exoplanet discovery pipeline loop...")
@@ -186,7 +186,7 @@ try:
     )
     print("SUCCESS: Pipeline vetting loop finished.")
 except Exception as e:
-    print(f"❌ Vetting session crashed: {e}")
+    print(f"[ERROR] Vetting session crashed: {e}")
 
 # ── 7. GENERATE SESSION SUMMARY ──────────────────────────────
 from kaggle_discovery_runner import generate_session_summary
@@ -248,5 +248,5 @@ try:
 except Exception as e:
     print(f"Kaggle push failed: {e}")
 
-print("\n🎉 Autonomous discovery execution completed successfully!")
+print("\n[SUCCESS] Autonomous discovery execution completed successfully!")
 print("=" * 70)

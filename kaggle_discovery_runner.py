@@ -205,15 +205,35 @@ def build_target_list(
             }
         }
         
-        req_data = f"request={json.dumps(payload)}".encode("utf-8")
-        req = urllib.request.Request(url, data=req_data, headers={'User-Agent': 'Mozilla/5.0'})
+        import threading
+        import queue
         
+        q = queue.Queue()
+        def worker():
+            try:
+                req_data = f"request={json.dumps(payload)}".encode("utf-8")
+                req = urllib.request.Request(url, data=req_data, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    res_data = response.read()
+                    q.put((True, res_data))
+            except Exception as e_thread:
+                q.put((False, e_thread))
+                
+        t = threading.Thread(target=worker)
+        t.daemon = True
         logger.info("Sending request to MAST REST API...")
-        with urllib.request.urlopen(req, timeout=15) as response:
-            res = json.loads(response.read().decode('utf-8'))
+        t.start()
+        
+        try:
+            success, val = q.get(timeout=15)
+            if not success:
+                raise val
+            res = json.loads(val.decode('utf-8'))
             if "data" not in res:
                 raise ValueError("No data field in MAST REST response")
             df = pd.DataFrame(res["data"])
+        except queue.Empty:
+            raise TimeoutError("TIC query timed out after 15 seconds (wall-clock limit)")
             
         required_cols = ["ID", "ra", "dec", "Tmag", "Teff", "rad", "logg",
                          "contratio", "priority", "wdflag"]
