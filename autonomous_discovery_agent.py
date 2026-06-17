@@ -25,9 +25,9 @@ from pathlib import Path
 GITHUB_REPO    = "https://github.com/Iceandlava124/tess-exoplanet-pipeline.git"
 KAGGLE_DATASET = "bhavishmehta/tess-exoplanet-discovery-results"
 SESSION_LABEL  = date.today().strftime("%Y-%m-%d")
-TIME_LIMIT_HRS = 8.0
+TIME_LIMIT_HRS = 5.0
 DISK_LIMIT_GB  = 18
-STARS_PER_RUN  = 150
+STARS_PER_RUN  = 400
 
 # ── ENVIRONMENT PATHS ────────────────────────────────────────
 WORKING_DIR = Path("/kaggle/working") if os.path.exists("/kaggle") else Path(".").resolve()
