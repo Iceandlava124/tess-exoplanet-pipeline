@@ -32,13 +32,133 @@ logger = logging.getLogger(__name__)
 # Signals peaking within ALIAS_TOLERANCE of these values are almost certainly
 # instrumental artefacts caused by the 13.5-day orbital period, momentum
 # dumps at 1-day multiples, or half-day beating with the spacecraft clock.
-TESS_ALIAS_PERIODS = [0.5, 1.0, 2.0, 13.5]
+TESS_ALIAS_PERIODS = [0.5, 1.0, 2.0, 3.125, 6.25, 13.5, 27.0]
 ALIAS_TOLERANCE    = 0.01   # days
+
+try:
+    # Try importing transitleastsquares
+    from transitleastsquares import transitleastsquares, cleaned_array, transit_mask
+    TLS_AVAILABLE = True
+except ImportError:
+    TLS_AVAILABLE = False
 
 
 def _is_alias(period: float) -> bool:
-    """Return True if *period* is within ALIAS_TOLERANCE of a TESS systematic alias."""
-    return any(abs(period - alias) < ALIAS_TOLERANCE for alias in TESS_ALIAS_PERIODS)
+    """
+    Check if a period is close to a known TESS systematic alias or its harmonics.
+    Rejects period if it's within tolerance of alias or simple fractions/multiples.
+    """
+    for alias in TESS_ALIAS_PERIODS:
+        if abs(period - alias) < ALIAS_TOLERANCE:
+            return True
+        # Check harmonics: 1/2, 1/3, 2/3, 2/1, 3/1
+        for factor in [0.5, 1.0/3.0, 2.0/3.0, 2.0, 3.0]:
+            if abs(period - alias * factor) < ALIAS_TOLERANCE:
+                return True
+    return False
+
+
+def run_tls(time: np.ndarray, flux: np.ndarray, flux_err: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    """
+    TLS is specifically designed for planet-shaped transit signals.
+    It uses a physical transit model instead of a box,
+    finding 10-20% more small planets than BLS.
+    Drop-in replacement for run_bls() — same inputs, same output format.
+    """
+    # Fallback to BLS if transitleastsquares is not available
+    if not TLS_AVAILABLE:
+        logger.warning("transitleastsquares not available. Falling back to run_bls.")
+        return run_bls(time, flux, flux_err)
+
+    try:
+        # Clean the arrays first — TLS requires no NaN values
+        time_clean, flux_clean = cleaned_array(time, flux)
+        
+        # Run TLS with automatic period grid
+        model = transitleastsquares(time_clean, flux_clean)
+        results = model.power(
+            minimum_period=0.5,
+            maximum_period=20.0,
+            show_progress_bar=False
+        )
+        
+        # Get best period — skip if alias
+        best_period = float(results.period)
+        
+        # Reject known systematic aliases and harmonics
+        if _is_alias(best_period):
+            # Mask out the alias period and find next peak
+            mask = transit_mask(time_clean, best_period, results.duration, results.T0)
+            
+            # Re-run on masked data if alias detected
+            model2 = transitleastsquares(time_clean[~mask], flux_clean[~mask])
+            results2 = model2.power(
+                minimum_period=0.5,
+                maximum_period=20.0,
+                show_progress_bar=False
+            )
+            
+            if results2.SDE < 5.0 or _is_alias(float(results2.period)):
+                # No clean period found — discard target
+                results_dict = {
+                    "status": "alias_discard",
+                    "reason": f"Best period {best_period:.4f}d is a known alias",
+                    "period": best_period,
+                    "snr": float(results.SDE),
+                    "alias_rejected": True,
+                    "epoch": float(results.T0),
+                    "t0": float(results.T0),
+                    "duration": float(results.duration),
+                    "depth": 1.0 - float(results.depth),
+                }
+                return results.periods, results.power, results_dict
+                
+            results = results2
+            best_period = float(results.period)
+        
+        # Check SDE (Signal Detection Efficiency) — TLS equivalent of SNR
+        if results.SDE < 5.0:
+            results_dict = {
+                "status": "below_threshold",
+                "period": best_period,
+                "snr": float(results.SDE),
+                "alias_rejected": False,
+                "epoch": float(results.T0),
+                "t0": float(results.T0),
+                "duration": float(results.duration),
+                "depth": 1.0 - float(results.depth),
+            }
+            return results.periods, results.power, results_dict
+        
+        # Check for secondary eclipse
+        sec_check = check_secondary_eclipse(time_clean, flux_clean, best_period, float(results.T0), float(results.duration))
+        secondary_depth = sec_check.get("secondary_depth", 0.0)
+
+        # Return in same format as old run_bls() so nothing else breaks
+        results_dict = {
+            "status": "ok",
+            "period": float(results.period),
+            "epoch": float(results.T0),
+            "t0": float(results.T0),
+            "duration": float(results.duration),
+            "depth": 1.0 - float(results.depth),
+            "snr": float(results.SDE),
+            "power_spectrum": {
+                "periods": results.periods.tolist(),
+                "power": results.power.tolist()
+            },
+            "odd_even_mismatch": float(results.odd_even_mismatch) if hasattr(results, "odd_even_mismatch") and results.odd_even_mismatch is not None else 0.0,
+            "secondary_depth": float(secondary_depth),
+            "transit_count": int(results.transit_count) if hasattr(results, "transit_count") and results.transit_count is not None else 0,
+            "distinct_transit_count": int(results.distinct_transit_count) if hasattr(results, "distinct_transit_count") and results.distinct_transit_count is not None else 0,
+            "alias_rejected": False,
+            "raw_results": results
+        }
+        return results.periods, results.power, results_dict
+        
+    except Exception as e:
+        logger.error(f"run_tls failed: {e}. Falling back to run_bls.")
+        return run_bls(time, flux, flux_err)
 
 
 def run_bls(

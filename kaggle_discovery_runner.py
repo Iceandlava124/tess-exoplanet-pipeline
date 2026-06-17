@@ -92,16 +92,20 @@ def build_target_list(
             Teff       = list(teff_range),
             rad        = list(radius_range),
             objType    = "STAR",
-            columns    = ["ID", "ra", "dec", "Tmag", "Teff", "rad", "logg",
-                          "contratio", "priority", "wdflag"],
-            sortby     = "priority",
+            pagesize   = max(2000, n_targets * 3),
         )
         df = catalog.to_pandas()
+        required_cols = ["ID", "ra", "dec", "Tmag", "Teff", "rad", "logg",
+                         "contratio", "priority", "wdflag"]
+        existing_cols = [c for c in required_cols if c in df.columns]
+        df = df[existing_cols].copy()
         df = df.rename(columns={
             "ID": "tic_id", "Tmag": "tmag", "Teff": "teff",
             "rad": "radius", "logg": "logg", "contratio": "contratio",
             "priority": "tic_priority",
         })
+        if "tic_priority" in df.columns:
+            df = df.sort_values(by="tic_priority", ascending=False)
         df["tic_id"] = df["tic_id"].astype(int)
         logger.info(f"TIC query returned {len(df)} raw candidates.")
     except Exception as e:
@@ -137,8 +141,8 @@ def build_target_list(
     if prioritise_multi_sector:
         try:
             from astroquery.mast import Observations
-            # Sample up to 2000 stars for sector counting (API rate limit friendly)
-            sample_ids = df["tic_id"].head(2000).tolist()
+            # Sample dynamically based on n_targets for sector counting (API friendly)
+            sample_ids = df["tic_id"].head(min(len(df), max(50, n_targets * 2))).tolist()
             obs = Observations.query_criteria(
                 target_name = [f"TIC {t}" for t in sample_ids],
                 obs_collection = "TESS",
@@ -235,7 +239,8 @@ def _write_csv_row(csv_path: str, row: dict):
         "tic_id", "session_label", "decision", "final_class", "confidence",
         "period", "period_err", "depth", "depth_err", "duration",
         "duration_err", "snr", "flag_reasons", "rp_earth", "is_new_discovery",
-        "alias_rejected",
+        "alias_rejected", "fpp", "combined_fpp", "fpp_status",
+        "contamination_ratio", "n_nearby_gaia_stars", "n_sectors_consistent"
     ]
     file_exists = os.path.isfile(csv_path)
     with open(csv_path, "a", newline="", encoding="utf-8") as f:
@@ -288,11 +293,12 @@ def _run_single_star(
     min_transit_snr: float,
     min_depth_ppm: float,
     log_file: str,
+    fast: bool = False,
 ) -> dict:
     """
     WHAT: Run the complete 13-step discovery pipeline for ONE star.
     WHY:  Encapsulated in a function so try/except in the main loop
-          can catch any error and continue to the next star safely.
+    can catch any error and continue to the next star safely.
 
     Returns a result dict with keys matching results.csv columns.
     """
@@ -303,13 +309,15 @@ def _run_single_star(
         "depth": 0.0, "depth_err": 0.0, "duration": 0.0,
         "duration_err": 0.0, "snr": 0.0, "flag_reasons": "",
         "rp_earth": 0.0, "is_new_discovery": False, "alias_rejected": False,
+        "fpp": None, "combined_fpp": None, "fpp_status": "skipped",
+        "contamination_ratio": None, "n_nearby_gaia_stars": 0, "n_sectors_consistent": 1
     }
     fits_path = None
 
     try:
         import lightkurve as lk
         from src.preprocess import preprocess_lightcurve, fold_lightcurve
-        from src.detect    import run_bls, compute_snr
+        from src.detect    import run_bls, run_tls, compute_snr
         from src.features  import extract_features
         from src.classify  import classify_target
         from src.fit_transit import fit_batman_transit
@@ -344,14 +352,21 @@ def _run_single_star(
         time_arr, flux_arr, flux_err = preprocess_lightcurve(lc_obj)
         quality_flag = "good" if len(time_arr) > 8000 else "poor"
 
-        # ── Step 3: BLS period search + alias rejection ──────────────────────
-        periods, power, bls_params = run_bls(time_arr, flux_arr, flux_err)
+        # ── Step 3: TLS/BLS period search + alias rejection ──────────────────
+        # Plain English: Run Box Least Squares (BLS) in fast mode or Transit Least Squares (TLS) in full analysis mode.
+        if fast:
+            logger.info("Fast mode enabled: running Box Least Squares (BLS)...")
+            periods, power, bls_params = run_bls(time_arr, flux_arr, flux_err)
+        else:
+            logger.info("Full analysis mode: running Transit Least Squares (TLS)...")
+            periods, power, bls_params = run_tls(time_arr, flux_arr, flux_err)
 
         if alias_rejection and bls_params.get("alias_rejected"):
             reason = (
                 f"alias_discard: top period {bls_params['period']:.4f} d "
                 f"matches TESS systematic alias"
             )
+            result["decision"]        = "DISCARD"
             result["flag_reasons"]    = reason
             result["period"]          = bls_params["period"]
             result["snr"]             = bls_params["snr"]
@@ -390,8 +405,44 @@ def _run_single_star(
         result["confidence"]  = classification.get("confidence", 0.0)
 
         # ── Step 6: Batman fitting + radius plausibility ──────────────────────
+        # Determine sector from light curve metadata
+        sector_val = None
+        try:
+            if hasattr(lc_obj, "sector"):
+                sector_val = lc_obj.sector
+            elif hasattr(lc_obj, "meta") and "SECTOR" in lc_obj.meta:
+                sector_val = lc_obj.meta["SECTOR"]
+            
+            # Plain English: Safe check to convert list/array sector values to a single integer
+            if sector_val is not None:
+                if hasattr(sector_val, "__iter__") and not isinstance(sector_val, (str, bytes)):
+                    sector_val = int(sector_val[0])
+                else:
+                    sector_val = int(sector_val)
+        except Exception as se_err:
+            logger.warning(f"Failed to resolve sector value: {se_err}")
+            sector_val = None
+
+        # Plain English: Run the pixel contamination check (Test 9) unless running in fast mode.
+        contamination_res = {"contaminated": False, "contamination_ratio": None, "n_nearby_gaia_stars": 0}
+        if not fast:
+            logger.info("Running pixel-level contamination check...")
+            try:
+                from flag_analyzer import check_pixel_contamination
+                contamination_res = check_pixel_contamination(
+                    tic_id=tic_id,
+                    sector=sector_val,
+                    period=bls_params["period"],
+                    epoch=bls_params["t0"],
+                    duration=bls_params["duration"]
+                )
+            except Exception as e:
+                logger.warning(f"Pixel contamination check failed: {e}")
+
+        # Add tic_id to bls_params for stellar parameter lookup inside fit_batman_transit
+        bls_params["tic_id"] = tic_id
         transit_params = fit_batman_transit(
-            time_arr, flux_arr, flux_err, bls_params, n_bootstrap=15
+            time_arr, flux_arr, flux_err, bls_params, n_bootstrap=25
         )
         rp_earth = transit_params.get("rp_earth", 0.0)
         result["rp_earth"]       = rp_earth
@@ -419,20 +470,77 @@ def _run_single_star(
             time_arr, flux_arr, flux_err, bls_params
         )
 
+        # Determine consistent sector count using lightkurve search
+        n_sectors_consistent = 1
+        try:
+            search_sectors = lk.search_lightcurve(f"TIC {tic_id}", mission="TESS")
+            if len(search_sectors) > 0:
+                sectors = search_sectors.table["sequence_number"]
+                n_sectors_consistent = int(len(np.unique(sectors)))
+        except Exception:
+            pass
+
         # ── Step 8: Cross-check + three-tier decision ─────────────────────────
         decision_res = evaluate_decision(
-            classification, reverse_results, bls_params, quality_flag
+            classification, reverse_results, bls_params, quality_flag,
+            forward_fit=transit_params, n_sectors_consistent=n_sectors_consistent
         )
 
         # Apply radius overrides AFTER decision (radius evidence always wins)
         if radius_flag in ("giant_radius_eb_suspect", "almost_certainly_eb"):
+            original_label = classification.get("label_name", "Unknown")
+            classification["label"] = 3
             classification["label_name"] = "Eclipsing Binary"
+            classification["confidence"] = 0.0
             decision_res["decision"]            = "DISCARD"
             decision_res["combined_confidence"] = 0.0
-            decision_res["flag_reasons"] = f"[{radius_flag}] {radius_note}"
+            decision_res["flag_reasons"] = f"[{radius_flag}] {radius_note} (original ML label was: {original_label})"
         elif radius_flag == "too_small_flag":
             existing = decision_res.get("flag_reasons", "")
-            decision_res["flag_reasons"] = f"[too_small_flag] {radius_note}; {existing}"
+            decision_res["flag_reasons"] = f"[too_small_flag] {radius_note}" + (f"; {existing}" if existing else "")
+
+        # Apply pixel contamination overrides
+        if contamination_res.get("contaminated") is True:
+            is_borderline = (decision_res["decision"] == "FLAG") or (decision_res["decision"] == "KEEP" and decision_res["combined_confidence"] < 0.75)
+            if rp_earth > 25.0:
+                classification["label"] = 3
+                classification["label_name"] = "Eclipsing Binary"
+                decision_res["decision"] = "DISCARD"
+                decision_res["combined_confidence"] = 0.0
+                decision_res["flag_reasons"] = "giant_radius_plus_contamination — almost certainly blend"
+                logger.warning("Contamination override: giant radius + pixel contamination. Forced to DISCARD.")
+            elif is_borderline:
+                decision_res["decision"] = "FLAG"
+                decision_res["flag_reasons"] = "pixel_contamination_detected"
+                logger.warning("Contamination override: borderline signal + pixel contamination. Forced to FLAG.")
+
+        # False Positive Probability (FPP) calculation (only for KEEP decisions)
+        fpp_res = {"fpp": None, "combined_fpp": None, "fpp_status": "skipped"}
+        if decision_res["decision"] == "KEEP" and not fast:
+            logger.info("Running TRICERATOPS False Positive Probability calculation...")
+            try:
+                from src.fpp_calculator import calculate_fpp
+                fpp_res = calculate_fpp(
+                    tic_id=tic_id,
+                    period=transit_params["period"],
+                    epoch=transit_params["t0"],
+                    depth=transit_params["transit_depth"],
+                    duration=transit_params["transit_duration_hr"] / 24.0,
+                    sector=sector_val,
+                    time=time_arr,
+                    flux=flux_arr
+                )
+                fpp = fpp_res.get("fpp")
+                combined_fpp = fpp_res.get("combined_fpp")
+                fpp_status = fpp_res.get("fpp_status")
+                
+                if combined_fpp is not None:
+                    if combined_fpp > 0.5:
+                        logger.warning(f"High false positive probability ({combined_fpp:.2f} > 0.5). Downgrading KEEP to FLAG.")
+                        decision_res["decision"] = "FLAG"
+                        decision_res["flag_reasons"] = f"High false positive probability: {fpp:.2f}"
+            except Exception as e:
+                logger.warning(f"FPP calculation failed: {e}")
 
         verdict    = decision_res["decision"]
         confidence = decision_res["combined_confidence"]
@@ -442,6 +550,12 @@ def _run_single_star(
         result["confidence"]   = confidence
         result["final_class"]  = classification.get("label_name", result["final_class"])
         result["flag_reasons"] = flag_reasons
+        result["fpp"]          = fpp_res.get("fpp")
+        result["combined_fpp"] = fpp_res.get("combined_fpp")
+        result["fpp_status"]   = fpp_res.get("fpp_status")
+        result["contamination_ratio"] = contamination_res.get("contamination_ratio")
+        result["n_nearby_gaia_stars"] = contamination_res.get("n_nearby_gaia_stars")
+        result["n_sectors_consistent"] = n_sectors_consistent
 
         # ── Step 9 (optional): Flag deep-analysis ─────────────────────────────
         if verdict == "FLAG" and run_flag_analyzer:
@@ -489,6 +603,28 @@ def _run_single_star(
             except Exception:
                 pass
 
+        # Generate binned model curves for plotting
+        folded_model = None
+        try:
+            import batman
+            params = batman.TransitParams()
+            params.t0 = transit_params['t0']
+            params.per = transit_params['period']
+            params.rp = transit_params['rp_over_rs']
+            params.a = transit_params['a_over_rs']
+            params.inc = transit_params['inclination']
+            params.ecc = 0.0
+            params.w = 90.0
+            params.u = [0.4, 0.3]
+            params.limb_dark = "quadratic"
+
+            phases_grid = np.linspace(-0.5, 0.5, len(folded_flux))
+            time_grid = phases_grid * transit_params['period'] + transit_params['t0']
+            m_model = batman.TransitModel(params, time_grid)
+            folded_model = m_model.light_curve(params)
+        except Exception as e:
+            logger.warning(f"Failed to generate folded model curve: {e}")
+
         # ── Step 11: Save plots for KEEP and FLAG ─────────────────────────────
         plot_path = None
         if verdict in ("KEEP", "FLAG"):
@@ -507,7 +643,7 @@ def _run_single_star(
                     transit_params=transit_params,
                     classification=classification,
                     phase_folded_flux=folded_flux,
-                    model_flux=None,
+                    model_flux=folded_model,
                     save=True,
                     save_dir=os.path.join(output_dir, "figures"),
                 )
@@ -594,6 +730,7 @@ def run_discovery_session(
     min_transit_snr: float = 5.0,
     min_depth_ppm: float = 100.0,
     log_file: str = "",
+    fast: bool = False,
 ) -> dict:
     """
     WHAT: Main discovery loop. Runs the 13-step pipeline on every star
@@ -689,6 +826,7 @@ def run_discovery_session(
                 min_transit_snr      = min_transit_snr,
                 min_depth_ppm        = min_depth_ppm,
                 log_file             = log_file,
+                fast                 = fast,
             )
         except Exception as e:
             logger.error(f"Unexpected error for TIC {tic_id}: {e}")
@@ -765,6 +903,21 @@ def run_discovery_session(
         "discard":          n_discard,
         "new_discoveries":  n_new,
     }
+
+    # Plain English: Write metadata.json to save the version of the pipeline.
+    try:
+        meta_path = os.path.join(output_dir, "metadata.json")
+        meta_data = {}
+        if os.path.exists(meta_path):
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta_data = json.load(f)
+        meta_data["pipeline_version"] = "2.0"
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta_data, f, indent=4)
+        logger.info("Updated metadata.json with pipeline_version: 2.0")
+    except Exception as e:
+        logger.warning(f"Failed to update metadata.json: {e}")
+
     logger.info(f"Session complete: {summary}")
     return summary
 
@@ -837,3 +990,128 @@ def generate_session_summary(
         "cumulative_total": n_cumulative,
     }
     return summary
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PART 8 — GITHUB INTEGRATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_github_username(token: str) -> Optional[str]:
+    """Fetch the authenticated user's login username from the GitHub API."""
+    import urllib.request
+    import json
+    url = "https://api.github.com/user"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req) as response:
+            res_data = json.loads(response.read().decode())
+            return res_data.get("login")
+    except Exception as e:
+        logger.error(f"Error fetching GitHub username: {e}")
+        return None
+
+def create_github_repo(token: str, repo_name: str) -> bool:
+    """Create a new GitHub repository for the user if it doesn't already exist."""
+    import urllib.request
+    import json
+    url = "https://api.github.com/user/repos"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json"
+    }
+    data = json.dumps({
+        "name": repo_name,
+        "description": "Autonomous exoplanet discovery results and logs",
+        "private": True
+    }).encode('utf-8')
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req) as response:
+            logger.info(f"GitHub repository '{repo_name}' created successfully.")
+            return True
+    except Exception as e:
+        logger.info(f"GitHub repository check/creation: {e}")
+        return False
+
+def push_results_to_github(
+    results_dir: str,
+    token: str,
+    repo_name: str = "tess-discovery-results",
+    session_label: str = ""
+) -> bool:
+    """
+    WHAT: Push cumulative exoplanet results and plots to a private GitHub repo.
+    WHY:  Allows the agent to act as an independent automation that automatically
+          reports back discovery results to the user's GitHub account.
+    """
+    username = get_github_username(token)
+    if not username:
+        logger.error("Could not retrieve GitHub username. Skipping GitHub push.")
+        return False
+
+    # Check/create the GitHub repo
+    create_github_repo(token, repo_name)
+    
+    # Configure git authentication URL
+    remote_url = f"https://{token}@github.com/{username}/{repo_name}.git"
+    
+    def run_git(args, allow_fail=False):
+        res = subprocess.run(args, cwd=str(results_dir), capture_output=True, text=True)
+        if res.returncode != 0 and not allow_fail:
+            logger.error(f"Git command failed: {' '.join(args)}\nError: {res.stderr.strip()}")
+            return False
+        return True
+
+    logger.info(f"Pushing results to GitHub repo {username}/{repo_name}...")
+    
+    # Init git repo inside results_dir
+    if not run_git(["git", "init"]): return False
+    run_git(["git", "config", "user.name", "TESS Discovery Agent"])
+    run_git(["git", "config", "user.email", "agent@tess-pipeline.local"])
+    
+    # Add remote
+    run_git(["git", "remote", "remove", "origin"], allow_fail=True)
+    if not run_git(["git", "remote", "add", "origin", remote_url]): return False
+    
+    # Fetch from remote to sync
+    run_git(["git", "fetch", "origin"], allow_fail=True)
+    
+    # Check out main branch or create it
+    if not run_git(["git", "checkout", "main"], allow_fail=True):
+        run_git(["git", "checkout", "-b", "main"], allow_fail=True)
+        
+    # Stage results files
+    files_to_add = [
+        "results.csv",
+        "candidates_submission.csv",
+        "manual_review_queue.csv",
+        "DISCOVERY_LOG.md",
+        "new_discoveries.txt",
+        "discovery_log.txt",
+        "this_week_targets.csv"
+    ]
+    for f in files_to_add:
+        if os.path.exists(os.path.join(results_dir, f)):
+            run_git(["git", "add", f])
+            
+    # Stage directories if they exist
+    for folder in ["plots", "reports"]:
+        if os.path.isdir(os.path.join(results_dir, folder)):
+            run_git(["git", "add", folder])
+            
+    # Commit changes
+    commit_msg = f"Auto-update exoplanet discovery: {session_label}"
+    run_git(["git", "commit", "-m", commit_msg], allow_fail=True)
+    
+    # Push to GitHub
+    if run_git(["git", "push", "-u", "origin", "main"]):
+        logger.info(f"SUCCESS: Results successfully pushed to GitHub repo: https://github.com/{username}/{repo_name}")
+        return True
+    else:
+        logger.error("Failed to push to GitHub remote repository.")
+        return False

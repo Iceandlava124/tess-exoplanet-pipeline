@@ -110,3 +110,54 @@ tic_id,decision,final_class,confidence,period,period_err,depth,depth_err,duratio
 219728669,DISCARD,No Signal,0.0384,2.360605,0.0,-4.7e-05,0.0,0.1,0.0,4.81,BLS signal SNR is below detection threshold
 4426490,DISCARD,No Signal,0.677,2.666664,0.0001,0.000852,0.0001,0.074833,0.001,7.73,Transit depth below 3× CDPP noise floor [auto-verdict]
 298074836,DISCARD,No Signal,0.5295,11.4669,0.0,-0.001664,0.0,0.1,0.0,2.35,BLS signal SNR is below detection threshold
+261136679,DISCARD,No Signal,0.2978,5.013916,0.0001,0.000100,0.0001,2.506958,0.001,5.81,"[too_small_flag] Fitted radius 0.16 R_earth is below the ~0.5 R_earth TESS detection limit. Signal may be instrumental noise or a very grazing geometry. Treat with caution.; Low confidence signal, likely noise or artefact",,,skipped,,0,24
+441420236,DISCARD,No Signal,0.1523,26.666613,0.0001,0.000100,0.0001,13.333306,0.001,18.31,"[too_small_flag] Fitted radius 0.12 R_earth is below the ~0.5 R_earth TESS detection limit. Signal may be instrumental noise or a very grazing geometry. Treat with caution.; Low confidence signal, likely noise or artefact",,,skipped,,0,3
+350618622,DISCARD,No Signal,0.0000,26.956952,0.0001,0.000000,0.0001,0.000000,0.001,2.18,"alias_discard: top period 26.9570 d matches TESS systematic (aliases: [0.5, 1.0, 2.0, 13.5] d +-0.01 d), no clean alternative found"
+100990000,DISCARD,No Signal,0.0000,9.571214,0.0001,0.000000,0.0001,0.000000,0.001,2.62,"alias_discard: top period 9.5712 d matches TESS systematic (aliases: [0.5, 1.0, 2.0, 13.5] d +-0.01 d), no clean alternative found"
+229742722,DISCARD,No Signal,0.0000,4.386008,0.0001,0.000000,0.0001,0.000000,0.001,2.19,"alias_discard: top period 4.3860 d matches TESS systematic (aliases: [0.5, 1.0, 2.0, 13.5] d +-0.01 d), no clean alternative found"
+388857263,DISCARD,No Signal,0.1502,13.935944,0.0001,0.000100,0.0001,6.967972,0.001,6.25,"Low confidence signal, likely noise or artefact",,,skipped,,0,8
+229055790,DISCARD,No Signal,0.0000,0.763450,0.0001,0.000000,0.0001,0.000000,0.001,2.40,"alias_discard: top period 0.7635 d matches TESS systematic (aliases: [0.5, 1.0, 2.0, 13.5] d +-0.01 d), no clean alternative found"
+261136679,DISCARD,No Signal,0.2978,5.013916,0.0001,0.000100,0.0001,2.506958,0.001,5.81,"[too_small_flag] Fitted radius 0.16 R_earth is below the ~0.5 R_earth TESS detection limit. Signal may be instrumental noise or a very grazing geometry. Treat with caution.; Low confidence signal, likely noise or artefact",,,skipped,,0,24
+307210830,DISCARD,No Signal,0.0000,3.689362,0.0001,0.000000,0.0001,0.100000,0.001,4.96,SNR below threshold,,,skipped,,0,1
+460205581,DISCARD,No Signal,0.0000,16.653188,0.0001,0.000000,0.0001,0.100000,0.001,4.80,SNR below threshold,,,skipped,,0,1
+149603524,DISCARD,No Signal,0.0000,0.881982,0.0001,0.000000,0.0001,0.100000,0.001,3.50,SNR below threshold,,,skipped,,0,1
+259377017,DISCARD,No Signal,0.0000,5.662125,0.0001,0.000000,0.0001,0.100000,0.001,4.17,SNR below threshold,,,skipped,,0,1
+441420236,DISCARD,No Signal,0.1523,26.666613,0.0001,0.000100,0.0001,13.333306,0.001,18.31,"[too_small_flag] Fitted radius 0.12 R_earth is below the ~0.5 R_earth TESS detection limit. Signal may be instrumental noise or a very grazing geometry. Treat with caution.; Low confidence signal, likely noise or artefact",,,skipped,,0,3
+350618622,DISCARD,No Signal,0.0000,26.956952,0.0001,0.000000,0.0001,0.000000,0.001,2.18,"alias_discard: top period 26.9570 d matches TESS systematic (aliases: [0.5, 1.0, 2.0, 13.5] d +-0.01 d), no clean alternative found"
+100990000,DISCARD,No Signal,0.0000,9.571214,0.0001,0.000000,0.0001,0.000000,0.001,2.62,"alias_discard: top period 9.5712 d matches TESS systematic (aliases: [0.5, 1.0, 2.0, 13.5] d +-0.01 d), no clean alternative found"
+229742722,DISCARD,No Signal,0.0000,4.386008,0.0001,0.000000,0.0001,0.000000,0.001,2.19,"alias_discard: top period 4.3860 d matches TESS systematic (aliases: [0.5, 1.0, 2.0, 13.5] d +-0.01 d), no clean alternative found"
+388857263,DISCARD,No Signal,0.1502,13.935944,0.0001,0.000100,0.0001,6.967972,0.001,6.25,"Low confidence signal, likely noise or artefact",,,skipped,,0,8
+229055790,DISCARD,No Signal,0.0000,0.763450,0.0001,0.000000,0.0001,0.000000,0.001,2.40,"alias_discard: top period 0.7635 d matches TESS systematic (aliases: [0.5, 1.0, 2.0, 13.5] d +-0.01 d), no clean alternative found"
+271893367,DISCARD,No Signal,0.0000,5.846198,0.0001,0.000000,0.0001,0.100000,0.001,4.72,SNR below threshold,,,skipped,,0,1
+144700903,DISCARD,No Signal,0.0000,2.324720,0.0001,0.000000,0.0001,0.100000,0.001,3.93,SNR below threshold,,,skipped,,0,1
+261136679,DISCARD,No Signal,0.2978,5.013916,0.0001,0.000100,0.0001,2.506958,0.001,5.81,"[too_small_flag] Fitted radius 0.16 R_earth is below the ~0.5 R_earth TESS detection limit. Signal may be instrumental noise or a very grazing geometry. Treat with caution.; Low confidence signal, likely noise or artefact",,,skipped,,0,24
+261136679,DISCARD,No Signal,0.2978,5.013916,0.0001,0.000100,0.0001,2.506958,0.001,5.81,"[too_small_flag] Fitted radius 0.16 R_earth is below the ~0.5 R_earth TESS detection limit. Signal may be instrumental noise or a very grazing geometry. Treat with caution.; Low confidence signal, likely noise or artefact",,,skipped,,0,24
+261136679,DISCARD,No Signal,0.2978,5.013916,0.0001,0.000100,0.0001,2.506958,0.001,5.81,"[too_small_flag] Fitted radius 0.16 R_earth is below the ~0.5 R_earth TESS detection limit. Signal may be instrumental noise or a very grazing geometry. Treat with caution.; Low confidence signal, likely noise or artefact",,,skipped,,0,24
+307210830,DISCARD,No Signal,0.0000,3.689362,0.0001,0.000000,0.0001,0.100000,0.001,4.96,SNR below threshold,,,skipped,,0,1
+460205581,DISCARD,No Signal,0.0000,16.653188,0.0001,0.000000,0.0001,0.100000,0.001,4.80,SNR below threshold,,,skipped,,0,1
+149603524,DISCARD,No Signal,0.0000,0.881982,0.0001,0.000000,0.0001,0.100000,0.001,3.50,SNR below threshold,,,skipped,,0,1
+259377017,DISCARD,No Signal,0.0000,5.662125,0.0001,0.000000,0.0001,0.100000,0.001,4.17,SNR below threshold,,,skipped,,0,1
+441420236,DISCARD,No Signal,0.1523,26.666613,0.0001,0.000100,0.0001,13.333306,0.001,18.31,"[too_small_flag] Fitted radius 0.12 R_earth is below the ~0.5 R_earth TESS detection limit. Signal may be instrumental noise or a very grazing geometry. Treat with caution.; Low confidence signal, likely noise or artefact",,,skipped,,0,3
+350618622,DISCARD,No Signal,0.0000,26.956952,0.0001,0.000000,0.0001,0.000000,0.001,2.18,"alias_discard: top period 26.9570 d matches TESS systematic (aliases: [0.5, 1.0, 2.0, 13.5] d +-0.01 d), no clean alternative found"
+100990000,DISCARD,No Signal,0.0000,9.571214,0.0001,0.000000,0.0001,0.000000,0.001,2.62,"alias_discard: top period 9.5712 d matches TESS systematic (aliases: [0.5, 1.0, 2.0, 13.5] d +-0.01 d), no clean alternative found"
+229742722,DISCARD,No Signal,0.0000,4.386008,0.0001,0.000000,0.0001,0.000000,0.001,2.19,"alias_discard: top period 4.3860 d matches TESS systematic (aliases: [0.5, 1.0, 2.0, 13.5] d +-0.01 d), no clean alternative found"
+388857263,DISCARD,No Signal,0.1502,13.935944,0.0001,0.000100,0.0001,6.967972,0.001,6.25,"Low confidence signal, likely noise or artefact",,,skipped,,0,8
+229055790,DISCARD,No Signal,0.0000,0.763450,0.0001,0.000000,0.0001,0.000000,0.001,2.40,"alias_discard: top period 0.7635 d matches TESS systematic (aliases: [0.5, 1.0, 2.0, 13.5] d +-0.01 d), no clean alternative found"
+271893367,DISCARD,No Signal,0.0000,5.846198,0.0001,0.000000,0.0001,0.100000,0.001,4.72,SNR below threshold,,,skipped,,0,1
+144700903,DISCARD,No Signal,0.0000,2.324720,0.0001,0.000000,0.0001,0.100000,0.001,3.93,SNR below threshold,,,skipped,,0,1
+261136679,DISCARD,No Signal,0.2169,7.521058,0.0001,0.000100,0.0001,3.760529,0.001,20.29,"Low confidence signal, likely noise or artefact",,,skipped,,0,24
+307210830,DISCARD,No Signal,0.1720,4.429728,0.0001,0.000100,0.0001,2.214864,0.001,21.85,"Low confidence signal, likely noise or artefact",,,skipped,,0,28
+460205581,DISCARD,No Signal,0.1082,6.654175,0.0001,0.000100,0.0001,3.327088,0.001,12.30,"Low confidence signal, likely noise or artefact",,,skipped,,0,7
+149603524,DISCARD,No Signal,0.0000,0.875499,0.0001,0.000000,0.0001,0.100000,0.001,4.32,SNR below threshold,,,skipped,,0,1
+259377017,DISCARD,No Signal,0.1100,4.529840,0.0001,0.000100,0.0001,2.264920,0.001,14.24,"Low confidence signal, likely noise or artefact",,,skipped,,0,8
+441420236,DISCARD,No Signal,0.0591,3.734772,0.0001,0.000100,0.0001,1.867386,0.001,8.41,"Low confidence signal, likely noise or artefact",,,skipped,,0,3
+350618622,DISCARD,No Signal,0.1957,1.983114,0.0001,0.000100,0.0001,0.991557,0.001,5.79,"Low confidence signal, likely noise or artefact",,,skipped,,0,39
+100990000,DISCARD,No Signal,0.1812,7.669740,0.0001,0.000100,0.0001,3.834870,0.001,6.97,"Low confidence signal, likely noise or artefact",,,skipped,,0,5
+229742722,DISCARD,No Signal,0.1698,5.033186,0.0001,0.000100,0.0001,2.516593,0.001,6.38,"Low confidence signal, likely noise or artefact",,,skipped,,0,40
+388857263,DISCARD,Planet Transit,0.0473,11.299439,0.0001,0.000100,0.0001,5.649719,0.001,11.40,"Low confidence signal, likely noise or artefact",,,skipped,,0,8
+229055790,DISCARD,No Signal,0.1559,10.536668,0.0001,0.000100,0.0001,5.268334,0.001,6.70,"Low confidence signal, likely noise or artefact",,,skipped,,0,4
+271893367,DISCARD,No Signal,0.1389,4.683394,0.0001,0.000100,0.0001,2.341697,0.001,14.94,"Low confidence signal, likely noise or artefact",,,skipped,,0,44
+144700903,DISCARD,No Signal,0.1113,1.862376,0.0001,0.000100,0.0001,0.931188,0.001,18.43,"Low confidence signal, likely noise or artefact",,,skipped,,0,4
+261136679,DISCARD,No Signal,0.1416,5.013916,0.0001,0.000100,0.0001,2.506958,0.001,7.10,"Low confidence signal, likely noise or artefact",,,skipped,,0,24
+261136679,DISCARD,No Signal,0.1163,7.521058,0.0001,0.000100,0.0001,3.760529,0.001,19.00,"Low confidence signal, likely noise or artefact",,,skipped,,0,24
+261136679,DISCARD,No Signal,0.1163,7.521058,0.0001,0.000100,0.0001,3.760529,0.001,19.00,"Low confidence signal, likely noise or artefact",,,skipped,,0,24

@@ -15,9 +15,9 @@ import subprocess
 from pathlib import Path
 
 # Install required astronomy libraries on Kaggle at startup
-print("Installing required packages (lightkurve, wotan)...")
+print("Installing required packages (lightkurve, wotan, batman-package)...")
 try:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "lightkurve", "wotan"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "lightkurve", "wotan", "batman-package"])
     print("SUCCESS: Packages installed.")
 except Exception as e:
     print("WARNING: Package installation encountered an error:", e)
@@ -69,6 +69,15 @@ print("SUCCESS: Targets catalog loaded.")
 print("Copying batch processor script...")
 shutil.copy2(INPUT_DIR / "batch_processor.py", WORKING_DIR / "batch_processor.py")
 print("SUCCESS: Batch processor script loaded.")
+
+# 4c. Copy pipeline cache DB
+print("Copying pipeline cache DB...")
+cache_src = INPUT_DIR / "pipeline_cache.db"
+if cache_src.exists():
+    shutil.copy2(cache_src, WORKING_DIR / "data" / "pipeline_cache.db")
+    print("SUCCESS: Cache DB loaded.")
+else:
+    print("WARNING: pipeline_cache.db not found, running without pre-filled cache.")
 
 
 # 5. Run the batch processor!

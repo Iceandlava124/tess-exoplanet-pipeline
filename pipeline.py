@@ -49,7 +49,7 @@ REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 from src.reverse_pipeline import run_reverse_pipeline
 from src.decision_engine import evaluate_decision, log_to_manual_review_queue
 
-def run_pipeline(tic_id: int, sector: int = None, snr_threshold: float = 5.0, force_download: bool = False, fits_path: str = None) -> dict:
+def run_pipeline(tic_id: int, sector: int = None, snr_threshold: float = 5.0, force_download: bool = False, fits_path: str = None, fast: bool = False) -> dict:
     """Run end-to-end pipeline for a single TIC target star."""
     logger.info(f"============================================================")
     logger.info(f"   STARTING PIPELINE FOR TARGET: TIC {tic_id}")
@@ -76,9 +76,16 @@ def run_pipeline(tic_id: int, sector: int = None, snr_threshold: float = 5.0, fo
     quality_flag = "good" if len(time) > 8000 else "poor"
     logger.info(f"✅ Cleaned data: {len(time)} valid cadences (baseline flux ~1.0) | Quality: {quality_flag}")
 
-    # 3. Run Box Least Squares (BLS) periodogram search
-    logger.info(f"Step 3: Running Box Least Squares (BLS) periodic search...")
-    periods, power, bls_params = run_bls(time, flux, flux_err)
+    # 3. Run Transit Least Squares (TLS) or Box Least Squares (BLS) periodic search
+    logger.info(f"Step 3: Running periodic transit search...")
+    if fast:
+        logger.info("Fast mode enabled: running Box Least Squares (BLS)...")
+        from src.detect import run_bls
+        periods, power, bls_params = run_bls(time, flux, flux_err)
+    else:
+        logger.info("Full analysis mode: running Transit Least Squares (TLS)...")
+        from src.detect import run_tls
+        periods, power, bls_params = run_tls(time, flux, flux_err)
 
     # 3a. Alias rejection early-exit
     # If run_bls could only find periods matching known TESS systematics, stop here.
@@ -195,6 +202,9 @@ def run_pipeline(tic_id: int, sector: int = None, snr_threshold: float = 5.0, fo
             "flag_reasons": "SNR below threshold"
         }
         phase_folded, folded_model = None, None
+        contamination_res = {"contaminated": False, "contamination_ratio": None, "n_nearby_gaia_stars": 0}
+        fpp_res = {"fpp": None, "combined_fpp": None, "fpp_status": "skipped"}
+        n_sectors_consistent = 1
     else:
         # 5. Extract features for classical ML
         logger.info(f"Step 4: Extracting signal parameters and diagnostic features...")
@@ -210,6 +220,44 @@ def run_pipeline(tic_id: int, sector: int = None, snr_threshold: float = 5.0, fo
 
         # 8. Fit Mandel & Agol transit model (batman)
         logger.info(f"Step 6: Fitting physical transit model & running bootstrap errors...")
+        
+        # Get sector from light curve metadata
+        sector_val = sector
+        try:
+            if sector_val is None:
+                if hasattr(lc, "sector"):
+                    sector_val = lc.sector
+                elif hasattr(lc, "meta") and "SECTOR" in lc.meta:
+                    sector_val = lc.meta["SECTOR"]
+            
+            # Plain English: Safe check to convert list/array sector values to a single integer
+            if sector_val is not None:
+                if hasattr(sector_val, "__iter__") and not isinstance(sector_val, (str, bytes)):
+                    sector_val = int(sector_val[0])
+                else:
+                    sector_val = int(sector_val)
+        except Exception as se_err:
+            logger.warning(f"Failed to resolve sector value: {se_err}")
+            sector_val = None
+
+        # 8_pre. Pixel contamination check (Test 9)
+        contamination_res = {"contaminated": False, "contamination_ratio": None, "n_nearby_gaia_stars": 0}
+        if not fast:
+            logger.info("Running pixel-level contamination check...")
+            try:
+                from flag_analyzer import check_pixel_contamination
+                contamination_res = check_pixel_contamination(
+                    tic_id=tic_id,
+                    sector=sector_val,
+                    period=bls_params["period"],
+                    epoch=bls_params["t0"],
+                    duration=bls_params["duration"]
+                )
+            except Exception as e:
+                logger.warning(f"Pixel contamination check failed: {e}")
+
+        # Add tic_id to bls_params for stellar parameter lookup inside fit_batman_transit
+        bls_params["tic_id"] = tic_id
         transit_params = fit_batman_transit(time, flux, flux_err, bls_params, n_bootstrap=25)
         rp_earth = transit_params['rp_earth']
         logger.info(f"Physical Fit: Radius: {rp_earth:.2f} R_earth | Depth: {transit_params['transit_depth_pct']:.4f}%")
@@ -265,9 +313,23 @@ def run_pipeline(tic_id: int, sector: int = None, snr_threshold: float = 5.0, fo
         reverse_results = run_reverse_pipeline(time, flux, flux_err, bls_params)
         logger.info(f"✅ Reverse tests passed: {reverse_results['tests_passed']}/6 | Confidence: {reverse_results['reverse_confidence']*100:.1f}%")
 
+        # Determine consistent sector count using lightkurve search
+        n_sectors_consistent = 1
+        try:
+            import lightkurve as lk
+            search_sectors = lk.search_lightcurve(f"TIC {tic_id}", mission="TESS")
+            if len(search_sectors) > 0:
+                sectors = search_sectors.table["sequence_number"]
+                n_sectors_consistent = int(len(np.unique(sectors)))
+        except Exception:
+            pass
+
         # Decision Engine
         logger.info(f"Step 6c: Running cross-check engine & three-tier decision system...")
-        decision_res = evaluate_decision(classification, reverse_results, bls_params, quality_flag)
+        decision_res = evaluate_decision(
+            classification, reverse_results, bls_params, quality_flag,
+            forward_fit=transit_params, n_sectors_consistent=n_sectors_consistent
+        )
 
         # 8b. Radius plausibility overrides
         # Apply AFTER evaluate_decision so radius evidence always wins.
@@ -301,6 +363,51 @@ def run_pipeline(tic_id: int, sector: int = None, snr_threshold: float = 5.0, fo
                 f"Radius caution: {rp_earth:.2f} R_earth flagged as too_small. "
                 f"Decision kept as-is ({decision_res['decision']})."
             )
+
+        # Apply pixel contamination overrides
+        if contamination_res.get("contaminated") is True:
+            is_borderline = (decision_res["decision"] == "FLAG") or (decision_res["decision"] == "KEEP" and decision_res["combined_confidence"] < 0.75)
+            if rp_earth > 25.0:
+                classification["label"] = 3
+                classification["label_name"] = "Eclipsing Binary"
+                decision_res["decision"] = "DISCARD"
+                decision_res["combined_confidence"] = 0.0
+                decision_res["flag_reasons"] = "giant_radius_plus_contamination — almost certainly blend"
+                logger.warning("Contamination override: giant radius + pixel contamination. Forced to DISCARD.")
+            elif is_borderline:
+                decision_res["decision"] = "FLAG"
+                decision_res["flag_reasons"] = "pixel_contamination_detected"
+                logger.warning("Contamination override: borderline signal + pixel contamination. Forced to FLAG.")
+
+        # False Positive Probability (FPP) calculation (only for KEEP decisions)
+        fpp_res = {"fpp": None, "combined_fpp": None, "fpp_status": "skipped"}
+        if decision_res["decision"] == "KEEP" and not fast:
+            logger.info("Running TRICERATOPS False Positive Probability calculation...")
+            try:
+                from src.fpp_calculator import calculate_fpp
+                fpp_res = calculate_fpp(
+                    tic_id=tic_id,
+                    period=transit_params["period"],
+                    epoch=transit_params["t0"],
+                    depth=transit_params["transit_depth"],
+                    duration=transit_params["transit_duration_hr"] / 24.0,
+                    sector=sector_val,
+                    time=time,
+                    flux=flux
+                )
+                fpp = fpp_res.get("fpp")
+                combined_fpp = fpp_res.get("combined_fpp")
+                fpp_status = fpp_res.get("fpp_status")
+                
+                if combined_fpp is not None:
+                    print(f"   FPP: {fpp:.3f} — {fpp_status}")
+                    
+                    if combined_fpp > 0.5:
+                        logger.warning(f"High false positive probability ({combined_fpp:.2f} > 0.5). Downgrading KEEP to FLAG.")
+                        decision_res["decision"] = "FLAG"
+                        decision_res["flag_reasons"] = f"High false positive probability: {fpp:.2f}"
+            except Exception as e:
+                logger.warning(f"FPP calculation failed: {e}")
 
         logger.info(f"DECISION: {decision_res['decision'].upper()}")
         logger.info(f"   Reason: {decision_res['flag_reasons']}")
@@ -385,7 +492,9 @@ def run_pipeline(tic_id: int, sector: int = None, snr_threshold: float = 5.0, fo
         if not file_exists:
             csv_writer.writerow([
                 "tic_id", "decision", "final_class", "confidence", "period", "period_err",
-                "depth", "depth_err", "duration", "duration_err", "snr", "flag_reasons"
+                "depth", "depth_err", "duration", "duration_err", "snr", "flag_reasons",
+                "fpp", "combined_fpp", "fpp_status",
+                "contamination_ratio", "n_nearby_gaia_stars", "n_sectors_consistent"
             ])
         fit_res = reverse_results.get("fit_results", {})
         csv_writer.writerow([
@@ -400,9 +509,28 @@ def run_pipeline(tic_id: int, sector: int = None, snr_threshold: float = 5.0, fo
             f"{fit_res.get('duration', 0.0):.6f}",
             "0.001",
             f"{bls_params.get('snr'):.2f}",
-            decision_res["flag_reasons"]
+            decision_res["flag_reasons"],
+            fpp_res.get("fpp"),
+            fpp_res.get("combined_fpp"),
+            fpp_res.get("fpp_status"),
+            contamination_res.get("contamination_ratio"),
+            contamination_res.get("n_nearby_gaia_stars"),
+            n_sectors_consistent
         ])
     logger.info(f"✅ Appended to results.csv")
+    
+    # Update results/metadata.json with pipeline version
+    try:
+        meta_path = ROOT / "results" / "metadata.json"
+        meta_data = {}
+        if meta_path.exists():
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta_data = json.load(f)
+        meta_data["pipeline_version"] = "2.0"
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta_data, f, indent=4)
+    except Exception as e:
+        logger.warning(f"Failed to update metadata.json: {e}")
     
     logger.info(f"============================================================")
     logger.info(f"   PIPELINE RUN SUCCESSFULLY COMPLETED FOR TIC {tic_id}")
@@ -428,6 +556,10 @@ if __name__ == "__main__":
              "(no --tic_id required when used alone)."
     )
 
+    # --- speed / analysis depth flags ---
+    parser.add_argument("--fast", action="store_true", help="Skip FPP and pixel-level checks for speed, use BLS instead of TLS")
+    parser.add_argument("--full-analysis", action="store_true", default=True, help="Enable all physical checks (TLS, FPP, and pixel checks)")
+
     args = parser.parse_args()
 
     # ── Mode A: single-star pipeline ─────────────────────────────────────────
@@ -439,6 +571,7 @@ if __name__ == "__main__":
                 snr_threshold=args.snr,
                 force_download=args.force,
                 fits_path=args.fits_path,
+                fast=args.fast
             )
             # Auto-trigger deep analysis if this star was flagged
             if getattr(args, "analyze_flags", False) or \

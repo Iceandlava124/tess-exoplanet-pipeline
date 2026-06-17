@@ -12,5 +12,6 @@
         "flag_folder": "C:\\Users\\gudae\\Desktop\\Learn_ml\\results\\FLAG",
         "discard_folder": "C:\\Users\\gudae\\Desktop\\Learn_ml\\results\\DISCARD",
         "plots_folder": "C:\\Users\\gudae\\Desktop\\Learn_ml\\results\\plots\\flag_analysis"
-    }
+    },
+    "pipeline_version": "2.0"
 }

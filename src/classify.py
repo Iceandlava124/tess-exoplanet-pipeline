@@ -42,6 +42,19 @@ def load_random_forest(model_path: Optional[Path] = None):
 def load_cnn(model_path: Optional[Path] = None):
     """Load the trained CNN classifier."""
     import tensorflow as tf
+    
+    # Patch BatchNormalization for Keras 2 -> Keras 3 deserialization compatibility
+    try:
+        from tensorflow.keras.layers import BatchNormalization
+        original_init = BatchNormalization.__init__
+        def patched_init(self, *args, **kwargs):
+            for k in ['renorm', 'renorm_clipping', 'renorm_momentum']:
+                kwargs.pop(k, None)
+            original_init(self, *args, **kwargs)
+        BatchNormalization.__init__ = patched_init
+    except Exception as e:
+        pass
+
     if model_path is None:
         model_path = MODELS_DIR / "cnn_classifier.h5"
     if not model_path.exists():

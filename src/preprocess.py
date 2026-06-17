@@ -80,40 +80,25 @@ def sigma_clip(
     n_iter: int = 5,
 ) -> np.ndarray:
     """
-    Iterative sigma-clipping to remove outliers from flux array.
-
-    In each iteration:
-    1. Compute the median and standard deviation
-    2. Flag points more than `sigma` std away from the median
-    3. Replace flagged points with NaN
-    4. Repeat until no more points are clipped
-
-    Args:
-        flux:   1D array of flux values
-        sigma:  Clipping threshold in units of standard deviation
-        n_iter: Max iterations
-
-    Returns:
-        Flux array with outliers replaced by NaN.
-
-    📚 LEARNING NOTE:
-        Why use MEDIAN instead of MEAN for outlier removal?
-        The mean is sensitive to extreme values — one cosmic ray spike
-        at 10x normal flux will drag the mean way up.
-        The median is "robust" — it's not affected by outliers.
-        This is a fundamental concept in robust statistics.
-
-        Example:
-            flux = [1.0, 1.0, 1.0, 1.0, 100.0]
-            mean  = 20.8  ← pulled up by the spike!
-            median = 1.0  ← unaffected
+    Iterative sigma-clipping using robust Median Absolute Deviation (MAD)
+    to remove outliers from flux array without scale inflation.
     """
     flux = flux.copy().astype(float)
 
     for _ in range(n_iter):
         median = np.nanmedian(flux)
-        std = np.nanstd(flux)
-        mask = np.abs(flux - median) > sigma * std
+        
+        # Use MAD as a robust estimator of standard deviation (rescaled by 1.4826)
+        mad = np.nanmedian(np.abs(flux - median))
+        if mad < 1e-10:
+            scale = np.nanstd(flux)
+        else:
+            scale = 1.4826 * mad
+            
+        if scale < 1e-10:
+            break
+            
+        mask = np.abs(flux - median) > sigma * scale
         if mask.sum() == 0:
             break
         flux[mask] = np.nan
@@ -125,6 +110,7 @@ def detrend_savgol(
     flux: np.ndarray,
     window_length: int = 401,
     polyorder: int = 3,
+    time: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     Remove long-term stellar variability using a Savitzky-Golay filter.
@@ -132,31 +118,46 @@ def detrend_savgol(
     A S-G filter fits a polynomial to a sliding window of data points,
     producing a smooth "trend" curve. Dividing by this trend removes
     slow variations while preserving sharp transit dips.
+    
+    If time is provided, detects gaps (>0.5 days) and detrends continuous
+    segments individually to avoid boundary artifacts.
 
     Args:
         flux:          Flux array (with NaNs replaced by interpolation first)
         window_length: Window size in data points. Must be odd.
                        For 2-min cadence, 401 points ≈ 13.4 hours.
         polyorder:     Polynomial degree (3 = cubic)
+        time:          Optional time array to check for gaps (e.g. stitched sectors)
 
     Returns:
         Detrended flux (flux / trend), normalised around 1.0
-
-    📚 LEARNING NOTE:
-        Imagine a star's brightness slowly rising and falling over days
-        due to star spots rotating in and out of view. This creates a
-        "baseline" that isn't flat. A transit dip sitting on top of
-        a rising baseline is hard to detect.
-
-        Detrending removes this slow baseline variation. We use a
-        Savitzky-Golay filter because it:
-        1. Preserves sharp features (transits are sharp — ~hours wide)
-        2. Removes slow features (stellar variability is slow — days wide)
-        3. Doesn't create edge effects like simple moving averages
-
-        This is a KEY pre-processing step in astronomy. The technique
-        is called "systematics correction."
     """
+    # Plain English: If time is provided, split the light curve by sector gaps (>0.5d) and detrend each individually
+    if time is not None:
+        dt = np.diff(time)
+        gap_indices = np.where(dt > 0.5)[0] + 1
+        segments = np.split(np.arange(len(flux)), gap_indices)
+        
+        detrended = np.zeros_like(flux)
+        for seg in segments:
+            if len(seg) == 0:
+                continue
+            seg_flux = flux[seg]
+            
+            # Adjust window length if segment is shorter than the window_length
+            if len(seg) < window_length:
+                seg_window = len(seg)
+                if seg_window % 2 == 0:
+                    seg_window -= 1
+                if seg_window > polyorder:
+                    detrended[seg] = detrend_savgol(seg_flux, window_length=seg_window, polyorder=polyorder, time=None)
+                else:
+                    median_val = np.nanmedian(seg_flux)
+                    detrended[seg] = seg_flux / (median_val if abs(median_val) > 1e-10 else 1.0)
+            else:
+                detrended[seg] = detrend_savgol(seg_flux, window_length=window_length, polyorder=polyorder, time=None)
+        return detrended
+
     # Replace NaNs with linear interpolation before filtering
     nans = np.isnan(flux)
     if nans.all():
@@ -256,8 +257,39 @@ def preprocess_lightcurve(
     # Step 2: Sigma clip
     flux = sigma_clip(flux, sigma=sigma_clip_threshold)
 
-    # Step 3: Detrend
-    flux = detrend_savgol(flux, window_length=window_length)
+    # Step 3: Detrend (Adaptive window based on stellar variability timescale)
+    try:
+        from astropy.timeseries import LombScargle
+        # Filter out NaNs from time and flux for LS periodogram calculation
+        ls_mask = np.isfinite(time) & np.isfinite(flux)
+        t_ls = time[ls_mask]
+        f_ls = flux[ls_mask]
+        if len(t_ls) > 100:
+            # Search frequency range corresponding to periods between 0.1 and 10 days
+            frequency, power = LombScargle(t_ls, f_ls).autopower(
+                minimum_frequency=1.0/10.0, 
+                maximum_frequency=1.0/0.1
+            )
+            best_freq = frequency[np.argmax(power)]
+            p_var = 1.0 / best_freq
+            
+            # Optimal window is 3x the variability timescale, capped between 0.1 and 1.5 days
+            w_days = np.clip(3 * p_var, 0.1, 1.5)
+            dt = np.nanmedian(np.diff(time))
+            if dt > 0:
+                adaptive_window = int(w_days / dt)
+                if adaptive_window % 2 == 0:
+                    adaptive_window += 1
+                # Savitzky-Golay window must be greater than polyorder (default 3)
+                if adaptive_window < 5:
+                    adaptive_window = 5
+                
+                logger.info(f"Adaptive Detrending: Stellar variability period={p_var:.2f}d -> Window={w_days:.2f}d ({adaptive_window} points)")
+                window_length = adaptive_window
+    except Exception as e:
+        logger.warning(f"Failed to calculate adaptive detrending window: {e}. Falling back to default window of {window_length} points.")
+
+    flux = detrend_savgol(flux, window_length=window_length, time=time)
 
     # Step 4: Normalise
     flux = normalise(flux)

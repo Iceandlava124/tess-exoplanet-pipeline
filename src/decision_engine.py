@@ -12,7 +12,29 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-def evaluate_decision(classification: dict, reverse_results: dict, bls_params: dict, quality_flag: str = "good") -> dict:
+def apply_sector_weighting(combined_confidence: float, n_sectors_consistent: int) -> float:
+    """
+    A signal seen in multiple independent TESS sectors is far more
+    reliable than a single-sector detection. Weight accordingly.
+    
+    n_sectors_consistent = 1: no change (baseline)
+    n_sectors_consistent = 2: boost confidence by 15%
+    n_sectors_consistent = 3+: boost confidence by 25%
+    n_sectors_consistent = 0: penalise by 20% (only one sector tried)
+    """
+    if n_sectors_consistent >= 3:
+        boost = 1.25
+    elif n_sectors_consistent == 2:
+        boost = 1.15
+    elif n_sectors_consistent == 1:
+        boost = 1.0
+    else:
+        boost = 0.80
+    
+    # Cap at 0.99 — never give 100% confidence
+    return min(combined_confidence * boost, 0.99)
+
+def evaluate_decision(classification: dict, reverse_results: dict, bls_params: dict, quality_flag: str = "good", forward_fit: dict = None, n_sectors_consistent: int = 1) -> dict:
     """
     Perform cross-check between forward ML and reverse physics pipelines, and make a decision.
     
@@ -25,18 +47,36 @@ def evaluate_decision(classification: dict, reverse_results: dict, bls_params: d
     reverse_fit = reverse_results.get("fit_results", {})
     reverse_tests_passed = reverse_results.get("tests_passed", 0)
     
-    # 1. Period Agreement: BLS period and fitted period agree within 5%
-    bls_period = bls_params.get("period", 1.0)
+    # 1. Period Agreement: check if forward period and reverse fitted period agree within 5%
+    if forward_fit and "period" in forward_fit:
+        ref_period = forward_fit["period"]
+    else:
+        ref_period = bls_params.get("period", 1.0)
+        
     fit_period = reverse_fit.get("period", 1.0)
-    period_diff = np.abs(bls_period - fit_period) / bls_period
+    period_diff = np.abs(ref_period - fit_period) / ref_period
     period_agreement = period_diff < 0.05
     
-    # 2. Depth Agreement: depths agree within 20%
-    bls_depth = bls_params.get("depth", 0.01)
+    # 2. Depth Agreement: check if depths agree within 20%
+    if forward_fit and "transit_depth" in forward_fit:
+        ref_depth = forward_fit["transit_depth"]
+    elif forward_fit and "depth" in forward_fit:
+        ref_depth = forward_fit["depth"]
+    else:
+        ref_depth = bls_params.get("depth", 0.01)
+        
     fit_depth = reverse_fit.get("depth", 0.01)
-    depth_diff = np.abs(bls_depth - fit_depth) / max(1e-5, bls_depth)
+    depth_diff = np.abs(ref_depth - fit_depth) / max(1e-5, ref_depth)
     depth_agreement = depth_diff < 0.20
     
+    # 2a. Rp/Rs Agreement: check if rp/rs values agree within 10%
+    rp_agreement = True
+    if forward_fit and "rp_over_rs" in forward_fit and "rp_over_rs" in reverse_fit:
+        f_rp = forward_fit["rp_over_rs"]
+        r_rp = reverse_fit["rp_over_rs"]
+        rp_diff = np.abs(f_rp - r_rp) / max(1e-5, f_rp)
+        rp_agreement = rp_diff < 0.10
+        
     # 3. Class Physics Agreement: forward class is consistent with physical tests
     # Planet (1): must pass depth, duration, and secondary eclipse tests
     is_depth_physical = reverse_results.get("is_depth_physical", True)
@@ -56,9 +96,13 @@ def evaluate_decision(classification: dict, reverse_results: dict, bls_params: d
     combined_confidence = forward_confidence * (reverse_tests_passed / 6.0)
     if not period_agreement:
         combined_confidence *= 0.5
+    if not rp_agreement:
+        combined_confidence *= 0.8
     if not class_physics_agreement:
         combined_confidence *= 0.6
         
+    # Apply sector weighting to combined confidence
+    combined_confidence = apply_sector_weighting(combined_confidence, n_sectors_consistent)
     combined_confidence = float(np.clip(combined_confidence, 0.0, 1.0))
     
     # Determine flag reasons (Special cases & borderline criteria)
@@ -69,10 +113,9 @@ def evaluate_decision(classification: dict, reverse_results: dict, bls_params: d
     if symmetry_score < 0.7:
         flag_reasons.append(f"Asymmetric transit shape (symmetry score: {symmetry_score:.2f} < 0.70)")
         
-    # Special case B: Period ambiguity (BLS has multiple close peaks - handled in pipeline check or if bls power is low)
-    # E.g. we add a flag if the BLS SNR is borderline or harmonics check flags it
+    # Special case B: Period ambiguity
     if bls_params.get("snr", 0.0) < 6.5:
-        flag_reasons.append(f"Borderline BLS signal SNR ({bls_params.get('snr'):.2f} < 6.5)")
+        flag_reasons.append(f"Borderline signal SNR ({bls_params.get('snr'):.2f} < 6.5)")
         
     # Special case C: Preprocessing quality flag is "poor"
     if quality_flag == "poor":
@@ -105,8 +148,10 @@ def evaluate_decision(classification: dict, reverse_results: dict, bls_params: d
         "combined_confidence": combined_confidence,
         "period_agreement": bool(period_agreement),
         "depth_agreement": bool(depth_agreement),
+        "rp_agreement": bool(rp_agreement),
         "class_physics_agreement": bool(class_physics_agreement),
-        "flag_reasons": reason_summary
+        "flag_reasons": reason_summary,
+        "n_sectors_consistent": n_sectors_consistent
     }
 
 def log_to_manual_review_queue(tic_id: int, decision_results: dict, fit_results: dict, output_dir: str):

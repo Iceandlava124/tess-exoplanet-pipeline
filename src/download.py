@@ -235,60 +235,107 @@ def download_lightcurve(
     sector: Optional[int] = None,
     cadence: str = "short",
     save_dir: Optional[Path] = None,
+    stitch_multisector: bool = False,
 ) -> Optional[Path]:
     """
     Download a TESS light curve for a given TIC ID from MAST.
+    If sector is None and stitch_multisector is True, this downloads and stitches
+    all available sectors for the target.
 
     Args:
-        tic_id:   TESS Input Catalog star ID (integer)
-        sector:   Which TESS sector to download (None = most recent)
-        cadence:  "short" (2-min) or "long" (10-min or 30-min)
-        save_dir: Where to save the FITS file
+        tic_id:             TESS Input Catalog star ID (integer)
+        sector:             Which TESS sector to download (None = all/most recent depending on stitch_multisector)
+        cadence:            "short" (2-min) or "long" (10-min or 30-min)
+        save_dir:           Where to save the FITS file
+        stitch_multisector: Whether to download and stitch all available sectors when sector is None
 
     Returns:
         Path to saved FITS file, or None if not found.
-
-    📚 LEARNING NOTE:
-        lightkurve.search_lightcurve() queries the MAST database and
-        returns a SearchResult object. We then call .download() to
-        fetch the actual FITS file and return a LightCurve object.
-
-        FITS files are the standard format for astronomical data.
-        Think of them like a specialized HDF5/numpy file that stores
-        both the data table AND metadata (star name, instrument, etc.)
-        in "header" cards.
     """
     if save_dir is None:
         save_dir = FITS_DIR
 
-    # Check if already downloaded (recursively check subfolders)
-    fits_pattern = list(save_dir.glob(f"**/*{tic_id}*.fits"))
-    if fits_pattern:
-        logger.info(f"TIC {tic_id}: already downloaded at {fits_pattern[0]}")
-        return fits_pattern[0]
+    # Plain English: Check if a stitched multi-sector file already exists
+    if sector is None and stitch_multisector:
+        stitched_path = save_dir / f"tic_{tic_id}_stitched.fits"
+        if stitched_path.exists():
+            logger.info(f"TIC {tic_id}: already stitched at {stitched_path}")
+            return stitched_path
+
+    # Plain English: Check if a specific single sector file already exists
+    if sector is not None:
+        # Search for files containing both the TIC ID and the formatted sector number
+        fits_sector_pattern = (
+            list(save_dir.glob(f"**/*s{sector:04d}*{tic_id}*.fits")) or 
+            list(save_dir.glob(f"**/*{tic_id}*s{sector:04d}*.fits")) or 
+            list(save_dir.glob(f"**/*{tic_id}*s{sector}*.fits"))
+        )
+        fits_sector_pattern = [f for f in fits_sector_pattern if "hlsp" not in str(f).lower() and "tasoc" not in str(f).lower()]
+        if fits_sector_pattern:
+            logger.info(f"TIC {tic_id} Sector {sector}: already downloaded at {fits_sector_pattern[0]}")
+            return fits_sector_pattern[0]
+
+    # Plain English: Check if any FITS file exists when not stitching and sector is None
+    if sector is None and not stitch_multisector:
+        fits_pattern = [f for f in save_dir.glob(f"**/*{tic_id}*.fits") if "hlsp" not in str(f).lower() and "tasoc" not in str(f).lower()]
+        if fits_pattern:
+            logger.info(f"TIC {tic_id}: already downloaded at {fits_pattern[0]}")
+            return fits_pattern[0]
 
     try:
-        # Search MAST for this star's light curves
-        search_result = lk.search_lightcurve(
-            f"TIC {tic_id}",
-            mission="TESS",
-            cadence=cadence,
-            sector=sector,
-        )
+        if sector is None and stitch_multisector:
+            # Plain English: Search, download, and stitch all available sectors
+            logger.info(f"TIC {tic_id}: Searching for all available TESS sectors...")
+            search_result = lk.search_lightcurve(
+                f"TIC {tic_id}",
+                mission="TESS",
+                cadence=cadence,
+            )
 
-        if len(search_result) == 0:
-            logger.warning(f"TIC {tic_id}: no light curve found on MAST")
+            if len(search_result) == 0:
+                logger.warning(f"TIC {tic_id}: no light curve found on MAST")
+                return None
+
+            if len(search_result) == 1:
+                logger.info(f"TIC {tic_id}: only 1 sector found, downloading standard FITS...")
+                lc = search_result[0].download(download_dir=str(save_dir))
+                fits_files = list(save_dir.glob(f"**/*{tic_id}*.fits"))
+                if fits_files:
+                    return fits_files[0]
+                return None
+
+            logger.info(f"TIC {tic_id}: downloading {len(search_result)} sectors...")
+            lc_collection = search_result.download_all(download_dir=str(save_dir))
+
+            logger.info(f"TIC {tic_id}: stitching {len(lc_collection)} sectors...")
+            stitched_lc = lc_collection.stitch()
+
+            stitched_path = save_dir / f"tic_{tic_id}_stitched.fits"
+            stitched_lc.to_fits(str(stitched_path), overwrite=True)
+            logger.info(f"TIC {tic_id}: successfully stitched and saved to {stitched_path}")
+            return stitched_path
+
+        else:
+            # Plain English: Download a single requested sector or default most recent
+            search_result = lk.search_lightcurve(
+                f"TIC {tic_id}",
+                mission="TESS",
+                cadence=cadence,
+                sector=sector,
+            )
+
+            if len(search_result) == 0:
+                logger.warning(f"TIC {tic_id}: no light curve found on MAST")
+                return None
+
+            lc = search_result[0].download(download_dir=str(save_dir))
+            fits_files = list(save_dir.glob(f"**/*{tic_id}*.fits"))
+            if fits_files:
+                return fits_files[0]
             return None
 
-        # Download the first (most recent or best) result
-        lc_collection = search_result[0].download(download_dir=str(save_dir))
-
-        # Find the saved file
-        fits_files = list(save_dir.glob(f"**/*{tic_id}*.fits"))
-        if fits_files:
-            return fits_files[0]
-
-        logger.warning(f"TIC {tic_id}: downloaded but couldn't locate file")
+    except Exception as e:
+        logger.error(f"TIC {tic_id}: download failed — {e}")
         return None
 
     except Exception as e:

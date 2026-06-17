@@ -1,4 +1,4 @@
-﻿"""
+"""
 flag_analyzer.py
 ================
 FLAG Deep-Analysis & Auto-Verification Layer.
@@ -683,6 +683,127 @@ def test8_noise_floor(lc_obj, time: np.ndarray, flux: np.ndarray,
                 "signal_above_noise": None}
 
 
+# Plain English: Check the TESS pixel-level data for nearby contaminating stars using lightkurve and Gaia, with local SQLite caching.
+def check_pixel_contamination(tic_id, sector, period, epoch, duration):
+    """
+    Checks the TESS pixel-level data for nearby contaminating stars.
+    A transit from a background star will show a centroid shift
+    AND will have a bright nearby star in the pixel data.
+    """
+    import lightkurve as lk
+    
+    # Try retrieving from local cache first to avoid download/query overhead
+    try:
+        from src.cache_manager import get_pixel_contamination, save_pixel_contamination
+        cached_res = get_pixel_contamination(tic_id, sector)
+        if cached_res is not None:
+            contamination_ratio, n_nearby_stars = cached_res
+            is_contaminated = (
+                (contamination_ratio is not None and contamination_ratio < 0.9) or
+                n_nearby_stars > 3
+            )
+            logger.info(f"Loaded cached pixel contamination for TIC {tic_id} sector {sector}: CROWDSAP={contamination_ratio}, Gaia stars={n_nearby_stars}")
+            return {
+                "status": "ok",
+                "contamination_ratio": contamination_ratio,
+                "n_nearby_gaia_stars": n_nearby_stars,
+                "contaminated": is_contaminated,
+                "contamination_note": (
+                    f"CROWDSAP={contamination_ratio:.3f}, " if contamination_ratio is not None else ""
+                    f"{n_nearby_stars} nearby Gaia stars (CACHED)"
+                )
+            }
+    except Exception as ce:
+        logger.warning(f"Failed to read pixel contamination from cache: {ce}")
+    
+    try:
+        # Download Target Pixel File (raw pixel data)
+        search_args = {
+            "target_name": f"TIC {tic_id}", 
+            "mission": "TESS", 
+            "exptime": 120
+        }
+        if sector is not None:
+            search_args["sector"] = sector
+            
+        tpf_search = lk.search_targetpixelfile(**search_args)
+        if len(tpf_search) == 0:
+            return {"status": "no_tpf_available", "contaminated": None, "contamination_ratio": None, "n_nearby_gaia_stars": 0, "contamination_note": "No TPF available"}
+        
+        tpf = tpf_search[0].download()
+        
+        # Check TIC contamination ratio
+        # > 0.1 means >10% of flux from nearby stars (CROWDSAP < 0.9)
+        contamination_ratio = tpf.hdu[1].header.get("CROWDSAP", None)
+        if contamination_ratio is not None:
+            contamination_ratio = float(contamination_ratio)
+        
+        # Count Gaia stars within 1 arcminute brighter than mag+3
+        from astroquery.gaia import Gaia
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+        
+        coord = SkyCoord(
+            ra=tpf.ra, dec=tpf.dec, unit="deg"
+        )
+        gaia_results = Gaia.query_object_async(
+            coordinate=coord, radius=u.Quantity(1.0, u.arcmin)
+        )
+        n_nearby_stars = len(gaia_results) if gaia_results else 0
+        
+        # Flag as contaminated if:
+        # contamination ratio > 0.1 (CROWDSAP < 0.9) OR more than 3 nearby bright stars
+        is_contaminated = (
+            (contamination_ratio is not None and 
+             contamination_ratio < 0.9) or
+            n_nearby_stars > 3
+        )
+        
+        # Save results to local SQLite cache
+        try:
+            save_pixel_contamination(tic_id, sector, contamination_ratio, n_nearby_stars)
+            actual_sector = getattr(tpf, 'sector', None)
+            if actual_sector is not None and actual_sector != sector:
+                save_pixel_contamination(tic_id, actual_sector, contamination_ratio, n_nearby_stars)
+        except Exception as ce:
+            logger.warning(f"Failed to write pixel contamination to cache: {ce}")
+        
+        return {
+            "status": "ok",
+            "contamination_ratio": contamination_ratio,
+            "n_nearby_gaia_stars": n_nearby_stars,
+            "contaminated": is_contaminated,
+            "contamination_note": (
+                f"CROWDSAP={contamination_ratio:.3f}, " if contamination_ratio is not None else ""
+                f"{n_nearby_stars} nearby Gaia stars"
+            )
+        }
+        
+    except Exception as e:
+        return {
+            "status": f"check_failed: {e}",
+            "contaminated": None,
+            "contamination_ratio": None,
+            "n_nearby_gaia_stars": 0,
+            "contamination_note": f"Check failed: {e}"
+        }
+
+
+def test9_pixel_contamination(tic_id: int, sector: Optional[int], bls_params: dict) -> dict:
+    """TEST 9 — Pixel-level contamination check."""
+    try:
+        return check_pixel_contamination(
+            tic_id=tic_id,
+            sector=sector,
+            period=bls_params.get("period"),
+            epoch=bls_params.get("t0", bls_params.get("epoch")),
+            duration=bls_params.get("duration")
+        )
+    except Exception as e:
+        logger.warning(f"Pixel contamination test failed: {e}")
+        return {"contaminated": None, "contamination_ratio": None, "n_nearby_gaia_stars": 0, "status": f"test_failed: {e}", "contamination_note": str(e)}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # PART 3 — AUTO-VERDICT LOGIC
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -701,13 +822,13 @@ def auto_verdict(tic_id: int, tests: dict, original_flag_reason: str) -> dict:
     test_keys = [
         "consistent_across_sectors", "centroid_stable",
         "signal_above_noise", "is_likely_starspot",
-        "is_likely_eb", "shape_is_physical",
+        "is_likely_eb", "shape_is_physical", "contaminated"
     ]
-    # For starspot and EB flags: passing means the flag is FALSE (not a problem)
+    # For starspot, EB, and contaminated flags: passing means the flag is FALSE (not a problem)
     def _passed(key, val):
         if val is None:
             return False
-        if key in ("is_likely_starspot", "is_likely_eb"):
+        if key in ("is_likely_starspot", "is_likely_eb", "contaminated"):
             return not bool(val)   # test passes when these are False
         return bool(val)
 
@@ -718,6 +839,7 @@ def auto_verdict(tic_id: int, tests: dict, original_flag_reason: str) -> dict:
         "is_likely_starspot":        tests.get("is_likely_starspot"),
         "is_likely_eb":              tests.get("is_likely_eb"),
         "shape_is_physical":         tests.get("shape_is_physical"),
+        "contaminated":              tests.get("contaminated"),
     }
 
     passed_list = [_passed(k, v) for k, v in results_map.items()]
@@ -906,12 +1028,13 @@ def plot_flag_diagnostic(tic_id: int, time: np.ndarray, flux: np.ndarray,
         "Starspot\nCheck",
         "Trapezoid\nShape",
         "CDPP\nNoise Floor",
+        "Pixel\nContamination",
     ]
     # Map tests to pass/fail/unknown
     def _score(val, key=""):
         if val is None:
             return 0.5   # grey = skipped
-        if key in ("is_likely_starspot", "is_likely_eb"):
+        if key in ("is_likely_starspot", "is_likely_eb", "contaminated"):
             return 1.0 if not val else 0.0
         return 1.0 if val else 0.0
 
@@ -924,6 +1047,7 @@ def plot_flag_diagnostic(tic_id: int, time: np.ndarray, flux: np.ndarray,
         _score(tests.get("is_likely_starspot"), "is_likely_starspot"),
         _score(tests.get("shape_is_physical")),
         _score(tests.get("signal_above_noise")),
+        _score(tests.get("contaminated"), "contaminated"),
     ]
     colors = ["#4CAF50" if s == 1.0 else "#F44336" if s == 0.0 else "#FF9800"
               for s in scores]
@@ -934,7 +1058,7 @@ def plot_flag_diagnostic(tic_id: int, time: np.ndarray, flux: np.ndarray,
     ax.set_xlabel("Pass (1) / Fail (0)")
     verdict_str = verdict.get("final_verdict", "?")
     n_p = verdict.get("tests_passed", "?")
-    ax.set_title(f"8-Test Score Card — Verdict: {verdict_str} ({n_p}/8 passed)",
+    ax.set_title(f"9-Test Score Card — Verdict: {verdict_str} ({n_p}/9 passed)",
                  fontsize=11, fontweight="bold")
 
     plt.suptitle(
@@ -1031,7 +1155,7 @@ Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 ---
 
-## 8-Test Diagnostic Summary
+## 9-Test Diagnostic Summary
 
 | # | Test | Result |
 |:--|:-----|:-------|
@@ -1043,6 +1167,7 @@ Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 | 6 | Stellar Variability | Rotation period: **{tests.get('stellar_rotation_period', '?')} d** (ratio: {tests.get('rotation_period_ratio', '?')}×) -> Starspot: **{tests.get('is_likely_starspot', '?')}** |
 | 7 | Trapezoid vs Box | Preferred model: **{tests.get('preferred_model', '?')}** (ΔBIC={tests.get('bic_difference', '?')}) -> Physical: **{tests.get('shape_is_physical', '?')}** |
 | 8 | CDPP Noise Floor | CDPP: **{tests.get('cdpp_ppm', '?')} ppm** -> Depth/CDPP: **{tests.get('depth_to_cdpp_ratio', '?')}×** -> Above noise: **{tests.get('signal_above_noise', '?')}** |
+| 9 | Pixel Contamination | Contaminated: **{tests.get('contaminated', '?')}** ({tests.get('contamination_note', '?')}) |
 
 ---
 
@@ -1111,7 +1236,7 @@ def run_flag_analysis(tic_ids: Optional[list] = None) -> dict:
         "tic_id", "original_flag_reason", "final_verdict", "tests_passed",
         "consistent_across_sectors", "centroid_stable", "secondary_depth_ratio",
         "ttv_significant", "odd_even_pvalue", "is_likely_starspot",
-        "shape_is_physical", "depth_to_cdpp_ratio", "human_review_note",
+        "shape_is_physical", "depth_to_cdpp_ratio", "contaminated", "human_review_note",
     ]
     csv_file  = open(analysis_csv_path, "w", newline="", encoding="utf-8")
     csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
@@ -1178,13 +1303,26 @@ def run_flag_analysis(tic_ids: Optional[list] = None) -> dict:
         t8 = test8_noise_floor(lc_obj, time, flux, bls_params)
         all_tests.update(t8)
 
+        # Test 9 — Pixel Contamination
+        sector_val = None
+        try:
+            if lc_obj is not None:
+                if hasattr(lc_obj, "sector"):
+                    sector_val = lc_obj.sector
+                elif hasattr(lc_obj, "meta") and "SECTOR" in lc_obj.meta:
+                    sector_val = lc_obj.meta["SECTOR"]
+        except Exception:
+            pass
+        t9 = test9_pixel_contamination(tic_id, sector_val, bls_params)
+        all_tests.update(t9)
+
         # ── Apply auto-verdict ───────────────────────────────────────────────
         verdict_dict = auto_verdict(tic_id, all_tests, original_reason)
         final_verdict = verdict_dict["final_verdict"]
         tests_passed  = verdict_dict["tests_passed"]
         human_note    = verdict_dict["human_review_note"]
 
-        logger.info(f"TIC {tic_id}: verdict = {final_verdict} ({tests_passed}/8 tests passed)")
+        logger.info(f"TIC {tic_id}: verdict = {final_verdict} ({tests_passed}/9 tests passed)")
         logger.info(f"           Note: {human_note}")
 
         # ── Generate diagnostic plot ─────────────────────────────────────────
@@ -1224,6 +1362,7 @@ def run_flag_analysis(tic_ids: Optional[list] = None) -> dict:
             "is_likely_starspot":        all_tests.get("is_likely_starspot"),
             "shape_is_physical":         all_tests.get("shape_is_physical"),
             "depth_to_cdpp_ratio":       all_tests.get("depth_to_cdpp_ratio"),
+            "contaminated":              all_tests.get("contaminated"),
             "human_review_note":         human_note,
         })
 
