@@ -46,6 +46,8 @@ try:
     import lightkurve
     import wotan
     import batman
+    import transitleastsquares
+    import ldtk
     print("SUCCESS: Core packages already installed.")
 except ImportError:
     print("Installing required astronomy packages...")
