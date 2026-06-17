@@ -75,14 +75,24 @@ try:
         shutil.copytree(INPUT_DIR / "src", PIPELINE_DIR / "src", dirs_exist_ok=True)
         print("SUCCESS: Code copied.")
     else:
-        print("Cloning pipeline repository from GitHub...")
-        result = subprocess.run(
-            ["git", "clone", "--depth=1", GITHUB_REPO, str(PIPELINE_DIR)],
-            capture_output=True, text=True, timeout=180
-        )
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip())
-        print("SUCCESS: Pipeline cloned.")
+        if (PIPELINE_DIR / ".git").exists():
+            print("Updating existing pipeline clone...")
+            result = subprocess.run(
+                ["git", "-C", str(PIPELINE_DIR), "pull"],
+                capture_output=True, text=True, timeout=120
+            )
+            print("SUCCESS: Pipeline updated.")
+        else:
+            if PIPELINE_DIR.exists():
+                shutil.rmtree(PIPELINE_DIR, ignore_errors=True)
+            print("Cloning pipeline repository from GitHub...")
+            result = subprocess.run(
+                ["git", "clone", "--depth=1", GITHUB_REPO, str(PIPELINE_DIR)],
+                capture_output=True, text=True, timeout=180
+            )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip())
+            print("SUCCESS: Pipeline cloned.")
 except Exception as e:
     print(f"[ERROR] Failed to load source code: {e}")
     sys.exit(1)
