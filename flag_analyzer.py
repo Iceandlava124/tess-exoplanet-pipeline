@@ -627,6 +627,94 @@ def test7_box_vs_trapezoid(time: np.ndarray, flux: np.ndarray,
                 "shape_is_physical": False}
 
 
+def test10_uv_shape_check(time: np.ndarray, flux: np.ndarray,
+                          bls_params: dict) -> dict:
+    """
+    TEST 10 — Trapezoid vs Triangle U/V Shape Discrimination.
+    """
+    try:
+        from scipy.optimize import curve_fit
+        period   = bls_params.get("period", 1.0)
+        t0       = bls_params.get("t0", time[0])
+        duration = bls_params.get("duration", 0.1)
+
+        phase = ((time - t0) / period) % 1.0
+        phase[phase > 0.5] -= 1.0
+        sort_idx = np.argsort(phase)
+        ph  = phase[sort_idx]
+        fl  = flux[sort_idx]
+
+        duration_days = duration
+        hw = 1.5 * duration_days
+        mask = np.abs(ph) < hw
+        if mask.sum() < 10:
+            return {"uv_verdict": "insufficient_data", "uv_ssr_ratio_med": 1.0, "is_v_shape": False}
+
+        ph_fit = ph[mask]
+        fl_fit = fl[mask]
+
+        oot_median = np.median(fl_fit)
+        min_fl = np.min(fl_fit)
+        if abs(min_fl - oot_median) < 1e-6:
+            return {"uv_verdict": "flat_curve", "uv_ssr_ratio_med": 1.0, "is_v_shape": False}
+
+        f_normalized_med = (fl_fit - oot_median) / (min_fl - oot_median)
+
+        in_transit_points = np.abs(ph_fit) < (duration_days / 2)
+        bottom_points = f_normalized_med[in_transit_points] > 0.8
+        flatness_ratio = np.sum(bottom_points) / len(bottom_points) if len(bottom_points) > 0 else 0.0
+
+        def trapezoid_model(t, width, ingress):
+            t_abs = np.abs(t)
+            y = np.zeros_like(t)
+            y[t_abs > width/2] = 0.0
+            ing = min(ingress, width/2 * 0.99)
+            if ing <= 0: ing = 1e-5
+            slope_mask = (t_abs <= width/2) & (t_abs > (width/2 - ing))
+            y[slope_mask] = (width/2 - t_abs[slope_mask]) / ing
+            y[t_abs <= (width/2 - ing)] = 1.0
+            return y
+
+        def triangle_model(t, width):
+            t_abs = np.abs(t)
+            y = np.zeros_like(t)
+            y[t_abs > width/2] = 0.0
+            slope_mask = t_abs <= width/2
+            y[slope_mask] = 1.0 - (t_abs[slope_mask] / (width/2))
+            return y
+
+        try:
+            popt_u_med, _ = curve_fit(trapezoid_model, ph_fit, f_normalized_med,
+                                      p0=[duration_days, duration_days*0.1],
+                                      bounds=([0, 0], [duration_days*3, duration_days*0.5]))
+            popt_v_med, _ = curve_fit(triangle_model, ph_fit, f_normalized_med,
+                                      p0=[duration_days],
+                                      bounds=([0], [duration_days*3]))
+            ssr_u_med = np.sum((f_normalized_med - trapezoid_model(ph_fit, *popt_u_med))**2)
+            ssr_v_med = np.sum((f_normalized_med - triangle_model(ph_fit, *popt_v_med))**2)
+            fit_ratio_med = ssr_u_med / ssr_v_med if ssr_v_med > 0 else 1.0
+        except Exception:
+            fit_ratio_med = 1.0
+
+        depth = abs(bls_params.get("depth", 0.001))
+
+        # Only discard if deep (depth >= 0.002, i.e. 2000 ppm), otherwise flag for human review (borderline)
+        is_v_shape = flatness_ratio < 0.25 and fit_ratio_med >= 0.85 and depth >= 0.002
+        is_borderline = flatness_ratio < 0.25 and fit_ratio_med >= 0.85 and depth < 0.002
+        
+        verdict = "FAIL (V-Shape)" if is_v_shape else ("FLAG (Borderline V-Shape)" if is_borderline else "PASS")
+
+        return {
+            "uv_verdict": verdict,
+            "uv_ssr_ratio_med": round(fit_ratio_med, 3),
+            "is_v_shape": is_v_shape,
+            "is_borderline_v_shape": is_borderline
+        }
+    except Exception as e:
+        logger.warning(f"UV shape test failed: {e}")
+        return {"uv_verdict": "error", "uv_ssr_ratio_med": 1.0, "is_v_shape": False, "is_borderline_v_shape": False}
+
+
 def test8_noise_floor(lc_obj, time: np.ndarray, flux: np.ndarray,
                       bls_params: dict) -> dict:
     """
@@ -822,13 +910,13 @@ def auto_verdict(tic_id: int, tests: dict, original_flag_reason: str) -> dict:
     test_keys = [
         "consistent_across_sectors", "centroid_stable",
         "signal_above_noise", "is_likely_starspot",
-        "is_likely_eb", "shape_is_physical", "contaminated"
+        "is_likely_eb", "shape_is_physical", "contaminated", "is_v_shape"
     ]
-    # For starspot, EB, and contaminated flags: passing means the flag is FALSE (not a problem)
+    # For starspot, EB, contaminated, and v-shape flags: passing means the flag is FALSE (not a problem)
     def _passed(key, val):
         if val is None:
             return False
-        if key in ("is_likely_starspot", "is_likely_eb", "contaminated"):
+        if key in ("is_likely_starspot", "is_likely_eb", "contaminated", "is_v_shape"):
             return not bool(val)   # test passes when these are False
         return bool(val)
 
@@ -840,6 +928,7 @@ def auto_verdict(tic_id: int, tests: dict, original_flag_reason: str) -> dict:
         "is_likely_eb":              tests.get("is_likely_eb"),
         "shape_is_physical":         tests.get("shape_is_physical"),
         "contaminated":              tests.get("contaminated"),
+        "is_v_shape":                tests.get("is_v_shape"),
     }
 
     passed_list = [_passed(k, v) for k, v in results_map.items()]
@@ -852,15 +941,17 @@ def auto_verdict(tic_id: int, tests: dict, original_flag_reason: str) -> dict:
                         tests.get("consistent_across_sectors") is False)
     deep_secondary   = (tests.get("secondary_depth_ratio") or 0.0) > 0.40
     centroid_bad     = (tests.get("centroid_shift_pixels") or 0.0) > 2.0
+    v_shape_fail     = tests.get("is_v_shape") is True
     all_fail         = n_passed == 0
 
-    if noise_fail or starspot_no_sec or deep_secondary or centroid_bad or all_fail:
+    if noise_fail or starspot_no_sec or deep_secondary or centroid_bad or v_shape_fail or all_fail:
         note = []
         if noise_fail:       note.append("Transit depth below 3× CDPP noise floor")
         if starspot_no_sec:  note.append("Stellar rotation period matches transit period (starspot) and not seen in other sectors")
         if deep_secondary:   note.append(f"Deep secondary eclipse ratio {tests.get('secondary_depth_ratio'):.2f} > 0.40 -> eclipsing binary")
         if centroid_bad:     note.append(f"Large centroid shift ({tests.get('centroid_shift_pixels'):.2f} px) -> background blend")
-        if all_fail:         note.append("All 8 diagnostic tests failed")
+        if v_shape_fail:     note.append(f"V-shaped transit geometry (SSR ratio={tests.get('uv_ssr_ratio_med')}) -> eclipsing binary false positive")
+        if all_fail:         note.append("All 9 diagnostic tests failed")
         return {
             "final_verdict": "DISCARD",
             "tests_passed": n_passed,
@@ -875,6 +966,7 @@ def auto_verdict(tic_id: int, tests: dict, original_flag_reason: str) -> dict:
         tests.get("is_likely_starspot") is not True,   # None = not detected -> OK
         tests.get("is_likely_eb") is not True,
         tests.get("shape_is_physical") is True,
+        tests.get("is_v_shape") is not True,
     ]
     if all(key_conditions) and n_passed >= 5:
         return {
@@ -898,6 +990,8 @@ def auto_verdict(tic_id: int, tests: dict, original_flag_reason: str) -> dict:
     if tests.get("ttv_significant") is True:
         amp = tests.get("ttv_amplitude_minutes", "?")
         notes.append(f"Significant TTV amplitude ({amp} min) -> multi-planet system candidate")
+    if tests.get("is_borderline_v_shape") is True:
+        notes.append(f"Borderline V-shape detected (ratio={tests.get('uv_ssr_ratio_med')}) but transit is shallow; manual review recommended to rule out small planet or grazing trajectory")
     if not notes:
         notes.append("Multiple borderline tests — no single discriminating factor")
 
@@ -1315,6 +1409,10 @@ def run_flag_analysis(tic_ids: Optional[list] = None) -> dict:
             pass
         t9 = test9_pixel_contamination(tic_id, sector_val, bls_params)
         all_tests.update(t9)
+
+        # Test 10 — U/V shape profiling
+        t10 = test10_uv_shape_check(time, flux, bls_params)
+        all_tests.update(t10)
 
         # ── Apply auto-verdict ───────────────────────────────────────────────
         verdict_dict = auto_verdict(tic_id, all_tests, original_reason)

@@ -47,7 +47,9 @@ def calculate_odd_even_mismatch(time, flux, period, epoch, duration_hours):
 def check_uv_shape_vshape(time, flux, period, epoch, duration_hours):
     """
     Evaluates whether the transit is U-shaped (planetary) or V-shaped (binary).
-    Uses the ratio of the transit core duration to the overall duration.
+    1. Uses a median-based out-of-transit normalization (robust against outliers).
+    2. Performs a classic model comparison by fitting a Trapezoid (U-shape) 
+       and a Triangle (V-shape) to compare the Sum of Squared Residuals (SSR).
     """
     duration_days = duration_hours / 24.0
     phase = ((time - epoch + period/2) % period) - period/2
@@ -58,26 +60,66 @@ def check_uv_shape_vshape(time, flux, period, epoch, duration_hours):
     f_win = flux[window]
     
     if len(t_win) < 10:
-        return "N/A (No Data)", 1.0
+        return "N/A (No Data)", 1.0, "N/A"
         
-    # Standardize dip
-    f_normalized = (f_win - np.median(f_win)) / (np.min(f_win) - np.median(f_win))
+    # 1. Median-based standardization (robust against detrending outliers)
+    oot_median = np.median(f_win)
+    f_normalized_med = (f_win - oot_median) / (np.min(f_win) - oot_median)
     
-    # Measure the fraction of points in the flat bottom (value < 0.2 of max depth)
-    # vs points in the ingress/egress boundaries
+    # 2. Mean-based standardization (sensitive to outliers)
+    oot_mean = np.mean(f_win)
+    f_normalized_mean = (f_win - oot_mean) / (np.min(f_win) - oot_mean)
+    
+    # --- Check 1: Core Flatness Ratio (using robust median-normalized data) ---
     in_transit_points = np.abs(t_win) < (duration_days / 2)
-    bottom_points = f_normalized[in_transit_points] > 0.8
+    bottom_points = f_normalized_med[in_transit_points] > 0.8
+    flatness_ratio = np.sum(bottom_points) / len(bottom_points) if len(bottom_points) > 0 else 0.0
     
-    if len(bottom_points) == 0:
-        return "N/A", 1.0
+    # --- Check 2: Model Comparison (Trapezoid vs Triangle) ---
+    # Define models normalized to [0, 1] dip depth
+    def trapezoid_model(t, width, ingress):
+        t_abs = np.abs(t)
+        y = np.zeros_like(t)
+        y[t_abs > width/2] = 0.0
+        slope_mask = (t_abs <= width/2) & (t_abs > (width/2 - ingress))
+        y[slope_mask] = (width/2 - t_abs[slope_mask]) / ingress
+        y[t_abs <= (width/2 - ingress)] = 1.0
+        return y
         
-    flatness_ratio = np.sum(bottom_points) / len(bottom_points)
-    
+    def triangle_model(t, width):
+        t_abs = np.abs(t)
+        y = np.zeros_like(t)
+        y[t_abs > width/2] = 0.0
+        slope_mask = t_abs <= width/2
+        y[slope_mask] = 1.0 - (t_abs[slope_mask] / (width/2))
+        return y
+
+    # Fit under Median Normalization
+    try:
+        popt_u_med, _ = curve_fit(trapezoid_model, t_win, f_normalized_med, p0=[duration_days, duration_days*0.2], bounds=([0, 0], [duration_days*3, duration_days]))
+        popt_v_med, _ = curve_fit(triangle_model, t_win, f_normalized_med, p0=[duration_days], bounds=([0], [duration_days*3]))
+        ssr_u_med = np.sum((f_normalized_med - trapezoid_model(t_win, *popt_u_med))**2)
+        ssr_v_med = np.sum((f_normalized_med - triangle_model(t_win, *popt_v_med))**2)
+        fit_ratio_med = ssr_u_med / ssr_v_med if ssr_v_med > 0 else 1.0
+    except Exception:
+        fit_ratio_med = 1.0
+
+    # Fit under Mean Normalization
+    try:
+        popt_u_mean, _ = curve_fit(trapezoid_model, t_win, f_normalized_mean, p0=[duration_days, duration_days*0.2], bounds=([0, 0], [duration_days*3, duration_days]))
+        popt_v_mean, _ = curve_fit(triangle_model, t_win, f_normalized_mean, p0=[duration_days], bounds=([0], [duration_days*3]))
+        ssr_u_mean = np.sum((f_normalized_mean - trapezoid_model(t_win, *popt_u_mean))**2)
+        ssr_v_mean = np.sum((f_normalized_mean - triangle_model(t_win, *popt_v_mean))**2)
+        fit_ratio_mean = ssr_u_mean / ssr_v_mean if ssr_v_mean > 0 else 1.0
+    except Exception:
+        fit_ratio_mean = 1.0
+
     verdict = "PASS (U-Shaped)"
-    if flatness_ratio < 0.25:  # Sharp, narrow bottom
-        verdict = "FAIL (V-Shaped Grazing/EB)"
+    if flatness_ratio < 0.25 and fit_ratio_med >= 0.85:
+        verdict = f"FAIL (V-Shaped EB, SSR U/V ratio (med): {fit_ratio_med:.2f})"
         
-    return verdict, flatness_ratio
+    proof_str = f"U/V Ratio (Median-Norm): {fit_ratio_med:.2f} | U/V Ratio (Mean-Norm): {fit_ratio_mean:.2f} (Median OOT: {oot_median:.6f}, Mean OOT: {oot_mean:.6f})"
+    return verdict, flatness_ratio, proof_str
 
 def check_centroid_offset(tic_id, sector):
     """
