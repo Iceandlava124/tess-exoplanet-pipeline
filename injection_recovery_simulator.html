@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Exoplanet Injection & Recovery Simulator</title>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0a0c10;
+            --card-bg: rgba(22, 28, 38, 0.7);
+            --card-border: rgba(255, 255, 255, 0.08);
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --accent-blue: #3b82f6;
+            --accent-purple: #8b5cf6;
+            --slider-track: #1f2937;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.15) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.15) 0px, transparent 50%);
+            min-height: 100/vh;
+            padding: 2rem;
+            line-height: 1.5;
+        }
+
+        header {
+            max-width: 1400px;
+            margin: 0 auto 2rem auto;
+            text-align: center;
+        }
+
+        h1 {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 2.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #60a5fa, #c084fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+
+        header p {
+            color: var(--text-muted);
+            font-size: 1.1rem;
+        }
+
+        .main-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            gap: 2rem;
+        }
+
+        @media (max-width: 1024px) {
+            .main-container {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Glassmorphic Panel styling */
+        .panel {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            backdrop-filter: blur(16px);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        .controls-title {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #3b82f6;
+            margin-bottom: 1.5rem;
+            border-bottom: 1px solid var(--card-border);
+            padding-bottom: 0.5rem;
+        }
+
+        .control-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .control-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.9rem;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+        }
+
+        .label-text {
+            color: var(--text-main);
+        }
+
+        .label-value {
+            color: #60a5fa;
+            font-family: monospace;
+            font-weight: 700;
+        }
+
+        .input-slider {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: var(--slider-track);
+            outline: none;
+            -webkit-appearance: none;
+            appearance: none;
+            cursor: pointer;
+        }
+
+        .input-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #3b82f6;
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.8);
+            transition: transform 0.1s ease;
+        }
+
+        .input-slider::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+        }
+
+        /* Status panel */
+        .verdict-box {
+            text-align: center;
+            padding: 1.5rem;
+            border-radius: 12px;
+            margin-bottom: 1.5rem;
+            font-weight: 700;
+            transition: all 0.3s ease;
+        }
+
+        .verdict-box.recovered {
+            background: rgba(16, 185, 129, 0.15);
+            border: 1px solid var(--accent-green);
+            color: var(--accent-green);
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.2);
+        }
+
+        .verdict-box.missed {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid var(--accent-red);
+            color: var(--accent-red);
+            box-shadow: 0 0 15px rgba(239, 68, 68, 0.2);
+        }
+
+        .verdict-title {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 1.8rem;
+            margin-bottom: 0.25rem;
+            letter-spacing: 1px;
+        }
+
+        .verdict-reason {
+            font-size: 0.95rem;
+            font-weight: 500;
+            color: var(--text-main);
+        }
+
+        /* Right panel layouts */
+        .dashboard-grid {
+            display: grid;
+            grid-template-rows: auto auto;
+            gap: 1.5rem;
+        }
+
+        .plots-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+
+        @media (max-width: 768px) {
+            .plots-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .plot-container {
+            background: rgba(15, 23, 42, 0.4);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 1rem;
+            position: relative;
+        }
+
+        .plot-header {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        canvas {
+            width: 100%;
+            height: 250px;
+            display: block;
+            background-color: #0b0f17;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.03);
+        }
+
+        /* Diagnostics table style */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        @media (max-width: 600px) {
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        .stat-card {
+            background: rgba(30, 41, 59, 0.3);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-bottom: 0.25rem;
+        }
+
+        .stat-value {
+            font-size: 1.1rem;
+            font-weight: 700;
+            font-family: monospace;
+        }
+
+        /* Boundary map section */
+        .completeness-container {
+            display: grid;
+            grid-template-columns: 1fr 300px;
+            gap: 1.5rem;
+        }
+
+        @media (max-width: 900px) {
+            .completeness-container {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .completeness-map {
+            position: relative;
+        }
+
+        .map-legend {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 1rem;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+        }
+
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+            flex-shrink: 0;
+            margin-top: 0.2rem;
+        }
+
+        .color-recovered { background: var(--accent-green); }
+        .color-missed { background: var(--accent-red); }
+        .color-borderline { background: #d97706; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Exoplanet Injection & Recovery Simulator</h1>
+    <p>Interactively stress-test the pipeline using planetary signals injected into stellar noise</p>
+</header>
+
+<div class="main-container">
+    <!-- Left Controls Panel -->
+    <div class="panel">
+        <div class="verdict-box recovered" id="verdict-card">
+            <div class="verdict-title" id="verdict-status">RECOVERED</div>
+            <div class="verdict-reason" id="verdict-reason">Signal is strong and intact</div>
+        </div>
+
+        <div class="controls-title">Injection Parameters</div>
+
+        <!-- 1. Planet Size -->
+        <div class="control-group">
+            <div class="control-label">
+                <span class="label-text">Planet Size (Depth)</span>
+                <span class="label-value" id="val-depth">3,000 ppm</span>
+            </div>
+            <input type="range" class="input-slider" id="slider-depth" min="50" max="15000" step="50" value="3000">
+        </div>
+
+        <!-- 2. Stellar Noise -->
+        <div class="control-group">
+            <div class="control-label">
+                <span class="label-text">Stellar Noise (Scatter)</span>
+                <span class="label-value" id="val-noise">150 ppm</span>
+            </div>
+            <input type="range" class="input-slider" id="slider-noise" min="0" max="600" step="10" value="150">
+        </div>
+
+        <!-- 3. Transit Duration -->
+        <div class="control-group">
+            <div class="control-label">
+                <span class="label-text">Transit Duration</span>
+                <span class="label-value" id="val-duration">6.0 hrs</span>
+            </div>
+            <input type="range" class="input-slider" id="slider-duration" min="1.0" max="12.0" step="0.5" value="6.0">
+        </div>
+
+        <div class="controls-title">Vetting Filters</div>
+
+        <!-- 4. Median Detrending Window -->
+        <div class="control-group">
+            <div class="control-label">
+                <span class="label-text">Median Filter Window</span>
+                <span class="label-value" id="val-window">24.0 hrs</span>
+            </div>
+            <input type="range" class="input-slider" id="slider-window" min="2.0" max="48.0" step="1.0" value="24.0">
+        </div>
+
+        <!-- 5. TTV Jitter -->
+        <div class="control-group">
+            <div class="control-label">
+                <span class="label-text">TTV Jitter (Tug / Delay)</span>
+                <span class="label-value" id="val-ttv">0 min</span>
+            </div>
+            <input type="range" class="input-slider" id="slider-ttv" min="0" max="60" step="5" value="0">
+        </div>
+    </div>
+
+    <!-- Right Visualization Panel -->
+    <div class="dashboard-grid">
+        <!-- Plots Row -->
+        <div class="plots-row">
+            <div class="plot-container">
+                <div class="plot-header">
+                    <span>Raw Light Curve (Injected Dips)</span>
+                    <span style="color: var(--accent-blue);">Raw Flux</span>
+                </div>
+                <canvas id="canvas-raw"></canvas>
+            </div>
+            <div class="plot-container">
+                <div class="plot-header">
+                    <span>Detrended & Folded Phase Stack</span>
+                    <span style="color: var(--accent-purple);">Folded Flux</span>
+                </div>
+                <canvas id="canvas-folded"></canvas>
+            </div>
+        </div>
+
+        <!-- Pipeline Diagnostics & Completeness Map -->
+        <div class="panel">
+            <div class="controls-title" style="margin-bottom: 1rem;">Pipeline Diagnostics</div>
+            
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Effective SNR</div>
+                    <div class="stat-value" id="stat-snr" style="color: #60a5fa;">0.0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Filter Status</div>
+                    <div class="stat-value" id="stat-filter" style="color: var(--accent-green);">Safe</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Folding Coherence</div>
+                    <div class="stat-value" id="stat-fold" style="color: var(--accent-green);">100%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Recovery Limit</div>
+                    <div class="stat-value" id="stat-limit" style="color: #c084fc;">~250 ppm</div>
+                </div>
+            </div>
+
+            <div class="controls-title" style="margin-top: 1.5rem; margin-bottom: 1rem;">Injection & Recovery Completeness Map</div>
+            
+            <div class="completeness-container">
+                <div class="completeness-map">
+                    <canvas id="canvas-heatmap" style="height: 180px;"></canvas>
+                </div>
+                <div class="map-legend">
+                    <div class="legend-item">
+                        <div class="legend-color color-recovered"></div>
+                        <div><strong>Recovered (🟢):</strong> High SNR. Signal preserved through detrending and folded coherently.</div>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color color-missed"></div>
+                        <div><strong>Missed (🔴):</strong> Buried under noise floor, erased by median filter, or smeared by large TTVs.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Elements
+    const sDepth = document.getElementById('slider-depth');
+    const sNoise = document.getElementById('slider-noise');
+    const sDuration = document.getElementById('slider-duration');
+    const sWindow = document.getElementById('slider-window');
+    const sTtv = document.getElementById('slider-ttv');
+
+    const vDepth = document.getElementById('val-depth');
+    const vNoise = document.getElementById('val-noise');
+    const vDuration = document.getElementById('val-duration');
+    const vWindow = document.getElementById('val-window');
+    const vTtv = document.getElementById('val-ttv');
+
+    const card = document.getElementById('verdict-card');
+    const statusText = document.getElementById('verdict-status');
+    const reasonText = document.getElementById('verdict-reason');
+
+    const statSnr = document.getElementById('stat-snr');
+    const statFilter = document.getElementById('stat-filter');
+    const statFold = document.getElementById('stat-fold');
+    const statLimit = document.getElementById('stat-limit');
+
+    const cRaw = document.getElementById('canvas-raw');
+    const cFolded = document.getElementById('canvas-folded');
+    const cHeatmap = document.getElementById('canvas-heatmap');
+
+    // Canvas contexts
+    const ctxRaw = cRaw.getContext('2d');
+    const ctxFolded = cFolded.getContext('2d');
+    const ctxHeatmap = cHeatmap.getContext('2d');
+
+    // Fixed simulation values
+    const totalPoints = 300;
+    const periodHours = 24.0;
+    const epochPoint = 100; // location of center of transit
+    const epochPoint2 = 250;
+
+    // Trigger update on slider movements
+    function updateValues() {
+        const depthVal = parseInt(sDepth.value);
+        const noiseVal = parseInt(sNoise.value);
+        const durVal = parseFloat(sDuration.value);
+        const winVal = parseFloat(sWindow.value);
+        const ttvVal = parseInt(sTtv.value);
+
+        vDepth.textContent = depthVal.toLocaleString() + ' ppm';
+        vNoise.textContent = noiseVal.toLocaleString() + ' ppm';
+        vDuration.textContent = durVal.toFixed(1) + ' hrs';
+        vWindow.textContent = winVal.toFixed(1) + ' hrs';
+        vTtv.textContent = ttvVal + ' min';
+
+        runSimulation(depthVal, noiseVal, durVal, winVal, ttvVal);
+    }
+
+    [sDepth, sNoise, sDuration, sWindow, sTtv].forEach(slider => {
+        slider.addEventListener('input', updateValues);
+    });
+
+    // Handle scaling
+    function resizeCanvas(canvas) {
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width;
+        canvas.height = rect.height;
+    }
+
+    function runSimulation(depth, noise, duration, windowHrs, ttv) {
+        resizeCanvas(cRaw);
+        resizeCanvas(cFolded);
+        resizeCanvas(cHeatmap);
+
+        // Convert ppm to fractional depth
+        const depthFrac = depth / 1e6;
+        const noiseFrac = noise / 1e6;
+        const durationDays = duration / 24.0;
+        
+        // Generate light curve
+        let time = [];
+        let rawFlux = [];
+        let cleanFlux = [];
+        
+        for (let i = 0; i < totalPoints; i++) {
+            let t = (i / totalPoints) * 2.0; // 2 days total
+            time.push(t);
+            
+            // Clean baseline
+            let base = 1.0;
+            
+            // Dips
+            // Transit 1 (centered at t = 0.5 days)
+            let ph1 = Math.abs(t - 0.5);
+            if (ph1 < (durationDays / 2)) {
+                base -= depthFrac;
+            }
+            
+            // Transit 2 (centered at t = 1.5 days + TTV shift)
+            // ttv is in minutes, convert to days
+            let ttvDays = (ttv / 60.0) / 24.0;
+            let ph2 = Math.abs(t - (1.5 + ttvDays));
+            if (ph2 < (durationDays / 2)) {
+                base -= depthFrac;
+            }
+            
+            cleanFlux.push(base);
+            
+            // Add noise
+            // Gaussian box-muller transform
+            let u1 = Math.random();
+            let u2 = Math.random();
+            let gNoise = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2) * noiseFrac;
+            
+            rawFlux.push(base + gNoise);
+        }
+
+        // Apply rolling median filter
+        // Points correspond to 2 days / 300 pts -> ~9.6 minutes per point
+        const ptSpacingHrs = 48.0 / totalPoints;
+        const ptsInWindow = Math.max(3, Math.round(windowHrs / ptSpacingHrs));
+        let detrendedFlux = [];
+        
+        for (let i = 0; i < totalPoints; i++) {
+            let win = [];
+            let start = Math.max(0, i - Math.floor(ptsInWindow / 2));
+            let end = Math.min(totalPoints - 1, i + Math.floor(ptsInWindow / 2));
+            for (let j = start; j <= end; j++) {
+                win.push(rawFlux[j]);
+            }
+            win.sort((a,b)=>a-b);
+            let median = win[Math.floor(win.length/2)];
+            detrendedFlux.push(rawFlux[i] - median + 1.0);
+        }
+
+        // Evaluate detrending erasure ratio
+        // If window is shorter than the transit duration, it eats the transit!
+        let erasureFactor = 1.0;
+        if (windowHrs <= duration) {
+            // fully erased or close to it
+            erasureFactor = Math.max(0.0, (windowHrs / duration) - 0.1);
+        } else if (windowHrs < 2 * duration) {
+            // partially distorted
+            erasureFactor = 0.5 + 0.5 * ((windowHrs - duration) / duration);
+        }
+        
+        // Effective depth after detrending
+        let effDepth = depth * erasureFactor;
+
+        // Phase folding with TTV impact
+        // Stacking transit 1 and transit 2 assuming perfect period = 1.0 days (no TTV correction)
+        // This simulates how a clockwork period stacking smears under TTVs
+        let foldedTime = [];
+        let foldedFlux = [];
+        
+        // Window of width = 2 * duration around transit
+        const nFoldPts = 100;
+        let ttvDiff = Math.abs((ttv / 60.0) / 24.0); // TTV shift in days
+        
+        // Generate points in phase space [-1.5*durationDays, 1.5*durationDays]
+        for (let i = 0; i < nFoldPts; i++) {
+            let ph = ((i / nFoldPts) * 3.0 * durationDays) - 1.5 * durationDays;
+            foldedTime.push(ph);
+            
+            // Average of transit 1 (centered at phase 0) and transit 2 (shifted by TTV)
+            let val1 = 1.0;
+            if (Math.abs(ph) < (durationDays / 2)) {
+                val1 -= (depthFrac * erasureFactor);
+            }
+            
+            let val2 = 1.0;
+            // Transit 2 is shifted in phase by TTV
+            if (Math.abs(ph - ttvDiff) < (durationDays / 2)) {
+                val2 -= (depthFrac * erasureFactor);
+            }
+            
+            // Add noise scatter
+            let u1 = Math.random();
+            let u2 = Math.random();
+            let gNoise = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2) * noiseFrac;
+            
+            foldedFlux.push(((val1 + val2) / 2.0) + gNoise);
+        }
+
+        // Calculations
+        // Estimate points in transit
+        const ptsInTransit = (duration / 24.0) * (totalPoints / 2.0); // points inside transit
+        const theoreticalSnr = noise > 0 ? (effDepth / noise) * Math.sqrt(ptsInTransit) : 999.0;
+        
+        // TTV smearing penalty
+        // If TTV is larger than transit duration / 2, the dips separate and look shallow
+        const ttvHrs = ttv / 60.0;
+        let foldingCoherence = 100;
+        if (ttvHrs > 0 && duration > 0) {
+            foldingCoherence = Math.max(0, Math.round(100 * (1.0 - (ttvHrs / duration))));
+        }
+
+        // Determine Vetting Verdict
+        let recovered = true;
+        let reason = "Signal recovered successfully!";
+        
+        if (erasureFactor < 0.2) {
+            recovered = false;
+            reason = "Erased by rolling median filter (window size too short!)";
+        } else if (theoreticalSnr < 7.0) {
+            recovered = false;
+            reason = "Burying Zone: effective SNR < 7.0 (transit too shallow / noisy)";
+        } else if (foldingCoherence < 30) {
+            recovered = false;
+            reason = "Smeared Zone: Transit stack disrupted by large TTV jitter";
+        } else if (theoreticalSnr < 9.0 || foldingCoherence < 60 || erasureFactor < 0.7) {
+            reason = "Weak recovery (borderline detection / high noise)";
+        }
+
+        // Draw Plot 1: Raw Data
+        drawRawCurve(time, rawFlux, cleanFlux, durationDays, ttvDays = (ttv/60)/24);
+
+        // Draw Plot 2: Detrended & Folded Curve
+        drawFoldedCurve(foldedTime, foldedFlux, durationDays, ttvDiff, effDepth / 1e6);
+
+        // Update Stat Cards
+        statSnr.textContent = theoreticalSnr.toFixed(1);
+        statSnr.style.color = theoreticalSnr >= 7.0 ? 'var(--accent-green)' : 'var(--accent-red)';
+        
+        statFilter.textContent = erasureFactor > 0.7 ? "Safe" : (erasureFactor > 0.3 ? "Distorted" : "ERASED!");
+        statFilter.style.color = erasureFactor > 0.7 ? 'var(--accent-green)' : (erasureFactor > 0.3 ? '#d97706' : 'var(--accent-red)');
+        
+        statFold.textContent = foldingCoherence + '%';
+        statFold.style.color = foldingCoherence > 70 ? 'var(--accent-green)' : (foldingCoherence > 40 ? '#d97706' : 'var(--accent-red)');
+
+        // Limit calculation based on noise and duration
+        const recoveryLimitPpm = Math.round(7.0 * noise / Math.sqrt(ptsInTransit));
+        statLimit.textContent = '~' + recoveryLimitPpm.toLocaleString() + ' ppm';
+
+        // Update Verdict Card UI
+        if (recovered) {
+            card.className = "verdict-box recovered";
+            statusText.textContent = "RECOVERED";
+            reasonText.textContent = reason;
+        } else {
+            card.className = "verdict-box missed";
+            statusText.textContent = "MISSED PLANET";
+            reasonText.textContent = reason;
+        }
+
+        // Draw Heatmap Map
+        drawHeatmapGrid(noise, duration, windowHrs, ttv);
+    }
+
+    function drawRawCurve(time, flux, cleanFlux, durationDays, ttvDays) {
+        const w = cRaw.width;
+        const h = cRaw.height;
+        ctxRaw.clearRect(0, 0, w, h);
+        
+        // Find scale limits
+        let minF = Math.min(...flux);
+        let maxF = Math.max(...flux);
+        let range = (maxF - minF) || 0.01;
+        
+        // padding
+        minF -= range * 0.1;
+        maxF += range * 0.1;
+        range = maxF - minF;
+
+        // Draw background grid lines
+        ctxRaw.strokeStyle = 'rgba(255,255,255,0.05)';
+        ctxRaw.lineWidth = 1;
+        for (let yVal = 0.98; yVal <= 1.02; yVal += 0.01) {
+            let y = h - ((yVal - minF) / range) * h;
+            ctxRaw.beginPath();
+            ctxRaw.moveTo(0, y);
+            ctxRaw.lineTo(w, y);
+            ctxRaw.stroke();
+        }
+
+        // Draw clean light curve path
+        ctxRaw.strokeStyle = 'rgba(59, 130, 246, 0.4)';
+        ctxRaw.lineWidth = 2;
+        ctxRaw.beginPath();
+        for (let i = 0; i < time.length; i++) {
+            let x = (time[i] / 2.0) * w;
+            let y = h - ((cleanFlux[i] - minF) / range) * h;
+            if (i === 0) ctxRaw.moveTo(x, y);
+            else ctxRaw.lineTo(x, y);
+        }
+        ctxRaw.stroke();
+
+        // Draw raw points
+        ctxRaw.fillStyle = '#60a5fa';
+        for (let i = 0; i < time.length; i++) {
+            let x = (time[i] / 2.0) * w;
+            let y = h - ((flux[i] - minF) / range) * h;
+            ctxRaw.beginPath();
+            ctxRaw.arc(x, y, 2.0, 0, 2 * Math.PI);
+            ctxRaw.fill();
+        }
+
+        // Highlight transit centers
+        ctxRaw.strokeStyle = 'rgba(245, 158, 11, 0.5)';
+        ctxRaw.setLineDash([5, 5]);
+        [0.5, 1.5 + ttvDays].forEach(center => {
+            let x = (center / 2.0) * w;
+            ctxRaw.beginPath();
+            ctxRaw.moveTo(x, 0);
+            ctxRaw.lineTo(x, h);
+            ctxRaw.stroke();
+        });
+        ctxRaw.setLineDash([]);
+    }
+
+    function drawFoldedCurve(ph, flux, durationDays, ttvDiff, effDepthVal) {
+        const w = cFolded.width;
+        const h = cFolded.height;
+        ctxFolded.clearRect(0, 0, w, h);
+
+        let minF = Math.min(...flux);
+        let maxF = Math.max(...flux);
+        let range = (maxF - minF) || 0.01;
+        minF -= range * 0.1;
+        maxF += range * 0.1;
+        range = maxF - minF;
+
+        // Grid lines
+        ctxFolded.strokeStyle = 'rgba(255,255,255,0.05)';
+        ctxFolded.lineWidth = 1;
+        for (let yVal = 0.98; yVal <= 1.02; yVal += 0.01) {
+            let y = h - ((yVal - minF) / range) * h;
+            ctxFolded.beginPath();
+            ctxFolded.moveTo(0, y);
+            ctxFolded.lineTo(w, y);
+            ctxFolded.stroke();
+        }
+
+        // Draw folded points
+        ctxFolded.fillStyle = '#a78bfa';
+        for (let i = 0; i < ph.length; i++) {
+            let x = ((ph[i] + 1.5 * durationDays) / (3.0 * durationDays)) * w;
+            let y = h - ((flux[i] - minF) / range) * h;
+            ctxFolded.beginPath();
+            ctxFolded.arc(x, y, 3.0, 0, 2 * Math.PI);
+            ctxFolded.fill();
+        }
+
+        // Draw theoretical model (Trapezoid) fit expectation if perfect
+        ctxFolded.strokeStyle = 'rgba(16, 185, 129, 0.8)';
+        ctxFolded.lineWidth = 2.5;
+        ctxFolded.beginPath();
+        for (let i = 0; i < ph.length; i++) {
+            let x = ((ph[i] + 1.5 * durationDays) / (3.0 * durationDays)) * w;
+            let expectedVal = 1.0;
+            if (Math.abs(ph[i]) < (durationDays / 2)) {
+                expectedVal -= effDepthVal;
+            }
+            let y = h - ((expectedVal - minF) / range) * h;
+            if (i === 0) ctxFolded.moveTo(x, y);
+            else ctxFolded.lineTo(x, y);
+        }
+        ctxFolded.stroke();
+    }
+
+    function drawHeatmapGrid(activeNoise, activeDuration, activeWindow, activeTtv) {
+        const w = cHeatmap.width;
+        const h = cHeatmap.height;
+        ctxHeatmap.clearRect(0, 0, w, h);
+
+        const rows = 12;
+        const cols = 20;
+        const cellW = w / cols;
+        const cellH = h / rows;
+
+        // Grid parameters:
+        // Y-axis: Planet Depth (ppm) from 100 to 8000
+        // X-axis: Stellar Noise (ppm) from 20 to 500
+        for (let r = 0; r < rows; r++) {
+            let depthVal = 8000 - (r / (rows - 1)) * 7900;
+            for (let c = 0; c < cols; c++) {
+                let noiseVal = 20 + (c / (cols - 1)) * 480;
+
+                // Evaluate recovery metric for this cell coordinate
+                let durationDays = activeDuration / 24.0;
+                let ptsInTransit = durationDays * (totalPoints / 2.0);
+                
+                // Detrending window effect
+                let erasureFactor = 1.0;
+                if (activeWindow <= activeDuration) {
+                    erasureFactor = Math.max(0.0, (activeWindow / activeDuration) - 0.1);
+                } else if (activeWindow < 2 * activeDuration) {
+                    erasureFactor = 0.5 + 0.5 * ((activeWindow - activeDuration) / activeDuration);
+                }
+                
+                let effDepth = depthVal * erasureFactor;
+                let theoreticalSnr = noiseVal > 0 ? (effDepth / noiseVal) * Math.sqrt(ptsInTransit) : 999.0;
+                
+                let ttvHrs = activeTtv / 60.0;
+                let foldingCoherence = 100;
+                if (ttvHrs > 0 && activeDuration > 0) {
+                    foldingCoherence = Math.max(0, Math.round(100 * (1.0 - (ttvHrs / activeDuration))));
+                }
+
+                let isRecovered = true;
+                let isBorderline = false;
+                if (erasureFactor < 0.2 || theoreticalSnr < 7.0 || foldingCoherence < 30) {
+                    isRecovered = false;
+                } else if (theoreticalSnr < 9.0 || foldingCoherence < 60 || erasureFactor < 0.7) {
+                    isBorderline = true;
+                }
+
+                // Fill color
+                if (isRecovered && !isBorderline) {
+                    ctxHeatmap.fillStyle = 'rgba(16, 185, 129, 0.65)';
+                } else if (isBorderline) {
+                    ctxHeatmap.fillStyle = 'rgba(217, 119, 6, 0.65)';
+                } else {
+                    ctxHeatmap.fillStyle = 'rgba(239, 68, 68, 0.25)';
+                }
+
+                ctxHeatmap.fillRect(c * cellW, r * cellH, cellW - 1, cellH - 1);
+            }
+        }
+
+        // Draw crosshair showing current active parameter location
+        // Find grid index for active values
+        let activeR = Math.round((8000 - parseInt(sDepth.value)) / 7900 * (rows - 1));
+        let activeC = Math.round((activeNoise - 20) / 480 * (cols - 1));
+        
+        // Clamping indices
+        activeR = Math.max(0, Math.min(rows - 1, activeR));
+        activeC = Math.max(0, Math.min(cols - 1, activeC));
+
+        // Draw selector circle
+        let targetX = activeC * cellW + cellW / 2;
+        let targetY = activeR * cellH + cellH / 2;
+        
+        ctxHeatmap.strokeStyle = '#ffffff';
+        ctxHeatmap.lineWidth = 2;
+        ctxHeatmap.beginPath();
+        ctxHeatmap.arc(targetX, targetY, 6, 0, 2 * Math.PI);
+        ctxHeatmap.stroke();
+
+        ctxHeatmap.fillStyle = '#ffffff';
+        ctxHeatmap.beginPath();
+        ctxHeatmap.arc(targetX, targetY, 2, 0, 2 * Math.PI);
+        ctxHeatmap.fill();
+    }
+
+    // Init
+    updateValues();
+</script>
+
+</body>
+</html>
