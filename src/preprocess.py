@@ -273,8 +273,9 @@ def preprocess_lightcurve(
             best_freq = frequency[np.argmax(power)]
             p_var = 1.0 / best_freq
             
-            # Optimal window is 3x the variability timescale, capped between 0.1 and 1.5 days
-            w_days = np.clip(3 * p_var, 0.1, 1.5)
+            # Optimal window is 3x the variability timescale, capped between 0.5 and 2.0 days
+            # Increased minimum from 0.1 to 0.5 days to prevent the "Detrending Trap" from erasing transits.
+            w_days = np.clip(3 * p_var, 0.5, 2.0)
             dt = np.nanmedian(np.diff(time))
             if dt > 0:
                 adaptive_window = int(w_days / dt)
