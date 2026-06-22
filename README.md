@@ -23,7 +23,7 @@ This pipeline acts as a physical filter: it combines **1D Convolutional Neural N
                   |      NASA MAST Archive Queries     |
                   +-----------------+-----------------+
                                     |
-                                    | [1] Multi-Source Stitching (SPOC, QLP, TGLC, Eleanor)
+                                    | [1] Multi-source fallback retrieval — attempts SPOC, QLP, TGLC, and GSFC-ELEANOR-LITE in priority order, using whichever pipeline has available data for the target sector.
                                     v
                   +-----------------+-----------------+
                   |   Light Curve Preprocessing       |

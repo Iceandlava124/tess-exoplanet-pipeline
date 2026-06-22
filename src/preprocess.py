@@ -105,6 +105,37 @@ def sigma_clip(
 
     return flux
 
+# ==========================================
+# STAGE 1 DETRENDING: WOTan Biweight (Robust Rough Pass)
+# ==========================================
+def detrend_wotan_biweight(
+    time: np.ndarray,
+    flux: np.ndarray,
+    window_length: float = 0.5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Stage 1 of two-stage detrending: robust outlier-resistant smoothing.
+    Wotan's biweight method down-weights outliers automatically, so it
+    removes large-scale trends without being distorted by remaining
+    cosmic ray hits or uncleaned bad points. This runs BEFORE the
+    adaptive Savitzky-Golay pass, which then fine-tunes using the
+    star's own measured variability period.
+
+    window_length is in DAYS, not cadences (wotan's native unit).
+    Returns the flattened flux and the trend that was removed,
+    so the trend can be inspected/plotted for QA if needed.
+    """
+    from wotan import flatten
+
+    flattened_flux, trend = flatten(
+        time,
+        flux,
+        method="biweight",
+        window_length=window_length,
+        return_trend=True
+    )
+    return flattened_flux, trend
+
 
 def detrend_savgol(
     flux: np.ndarray,
@@ -257,13 +288,36 @@ def preprocess_lightcurve(
     # Step 2: Sigma clip
     flux = sigma_clip(flux, sigma=sigma_clip_threshold)
 
-    # Step 3: Detrend (Adaptive window based on stellar variability timescale)
+    # ==========================================
+    # STAGE 1: Wotan biweight — robust rough detrend
+    # ==========================================
+    # Removes large-scale stellar trends, resistant to remaining outliers
+    wotan_window = 0.5
+    wotan_trend_removed = False
+    flux_stage1 = flux.copy()
+    try:
+        flux_stage1, wotan_trend = detrend_wotan_biweight(
+            time, flux, window_length=wotan_window
+        )
+        wotan_trend_removed = True
+        logger.info(f"Stage 1 Detrending: wotan biweight (window={wotan_window}d) successful.")
+    except Exception as e:
+        logger.warning(f"Stage 1 Wotan detrending failed: {e}. Skipping straight to Stage 2.")
+
+    # ==========================================
+    # STAGE 2: Adaptive Savitzky-Golay — fine-tuned per-star pass
+    # ==========================================
+    # Uses the EXISTING Lomb-Scargle logic to measure this star's own
+    # variability period, then sizes the Savgol window accordingly.
+    # This now runs on the wotan-cleaned flux, not the raw flux.
+    p_var = np.nan
+    w_days = np.nan
     try:
         from astropy.timeseries import LombScargle
         # Filter out NaNs from time and flux for LS periodogram calculation
-        ls_mask = np.isfinite(time) & np.isfinite(flux)
+        ls_mask = np.isfinite(time) & np.isfinite(flux_stage1)
         t_ls = time[ls_mask]
-        f_ls = flux[ls_mask]
+        f_ls = flux_stage1[ls_mask]
         if len(t_ls) > 100:
             # Search frequency range corresponding to periods between 0.1 and 10 days
             frequency, power = LombScargle(t_ls, f_ls).autopower(
@@ -285,12 +339,63 @@ def preprocess_lightcurve(
                 if adaptive_window < 5:
                     adaptive_window = 5
                 
-                logger.info(f"Adaptive Detrending: Stellar variability period={p_var:.2f}d -> Window={w_days:.2f}d ({adaptive_window} points)")
+                logger.info(f"Stage 2 Adaptive Detrending: Stellar variability period={p_var:.2f}d -> Window={w_days:.2f}d ({adaptive_window} points)")
                 window_length = adaptive_window
     except Exception as e:
         logger.warning(f"Failed to calculate adaptive detrending window: {e}. Falling back to default window of {window_length} points.")
 
-    flux = detrend_savgol(flux, window_length=window_length, time=time)
+    flux_final = detrend_savgol(flux_stage1, window_length=window_length, time=time)
+
+    # Add these new fields to the preprocessing output/quality report
+    if hasattr(lc, "meta"):
+        lc.meta["wotan_window_days"] = wotan_window
+        lc.meta["wotan_trend_removed"] = wotan_trend_removed
+        lc.meta["savgol_adaptive_window_days"] = w_days
+        lc.meta["savgol_stellar_variability_period"] = p_var
+        lc.meta["detrend_method"] = "wotan_biweight+adaptive_savgol"
+        
+        # Calculate Stage 1 RMS (wotan-cleaned but before savgol)
+        if len(flux_stage1) > 0 and np.nanmedian(flux_stage1) != 0:
+            norm_stage1 = flux_stage1 / np.nanmedian(flux_stage1)
+            valid_s1 = np.isfinite(norm_stage1)
+            if valid_s1.any():
+                lc.meta["stage1_rms"] = float(np.nanstd(norm_stage1[valid_s1]))
+            else:
+                lc.meta["stage1_rms"] = np.nan
+        else:
+            lc.meta["stage1_rms"] = np.nan
+
+    # ==========================================
+    # STAGE 4: Sanity check for over-flattening
+    # ==========================================
+    try:
+        # Calculate relative depths to be invariant to normalisation scale
+        pre_p50 = np.nanpercentile(flux, 50)
+        pre_p1 = np.nanpercentile(flux, 1)
+        pre_stage1_depth_rel = (pre_p50 - pre_p1) / pre_p50 if pre_p50 != 0 else 0
+        
+        post_p50 = np.nanpercentile(flux_final, 50)
+        post_p1 = np.nanpercentile(flux_final, 1)
+        post_stage2_depth_rel = (post_p50 - post_p1) / post_p50 if post_p50 != 0 else 0
+        
+        if pre_stage1_depth_rel > 0:
+            depth_retention_ratio = post_stage2_depth_rel / pre_stage1_depth_rel
+        else:
+            depth_retention_ratio = 1.0
+            
+        possible_overflattening = depth_retention_ratio < 0.5
+        
+        if hasattr(lc, "meta"):
+            lc.meta["depth_retention_ratio"] = float(depth_retention_ratio)
+            lc.meta["possible_overflattening"] = bool(possible_overflattening)
+            
+        if possible_overflattening:
+            logger.warning(f"Possible over-flattening — more than 50% of apparent transit depth was removed during detrending (retention={depth_retention_ratio:.2f}). Consider widening wotan_window_days for this star.")
+    except Exception as e:
+        logger.warning(f"Failed to calculate over-flattening check: {e}")
+
+    # Set flux to flux_final for the rest of the pipeline
+    flux = flux_final
 
     # Step 4: Normalise
     flux = normalise(flux)

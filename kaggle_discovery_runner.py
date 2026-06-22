@@ -184,57 +184,70 @@ def build_target_list(
     logger.info(f"Querying TESS Input Catalog for up to {n_targets} targets...")
 
     # ── Query TIC via astroquery ──────────────────────────────────────────────
-    # ── Query TIC via direct MAST API with strict 15s timeout ─────────────────
+    # ── Query TIC via direct MAST API with 60s timeout and 3x retry loop ─────────────────
     try:
-        import urllib.request
-        import json
-        
-        url = "https://mast.stsci.edu/api/v0/invoke"
-        payload = {
-            "service": "Mast.Catalogs.Filtered.Tic",
-            "format": "json",
-            "params": {
-                "columns": "ID,ra,dec,Tmag,Teff,rad,logg,contratio,priority,wdflag",
-                "filters": [
-                    {"paramName": "Tmag", "values": [{"min": float(mag_range[0]), "max": float(mag_range[1])}]},
-                    {"paramName": "Teff", "values": [{"min": float(teff_range[0]), "max": float(teff_range[1])}]},
-                    {"paramName": "rad", "values": [{"min": float(radius_range[0]), "max": float(radius_range[1])}]},
-                    {"paramName": "objType", "values": ["STAR"]}
-                ],
-                "pagesize": int(max(2000, n_targets * 3))
-            }
-        }
-        
-        import threading
-        import queue
-        
-        q = queue.Queue()
-        def worker():
+        query_success = False
+        for attempt in range(1, 4):
+            logger.info(f"Sending request to MAST REST API (Attempt {attempt}/3)...")
             try:
-                req_data = f"request={json.dumps(payload)}".encode("utf-8")
-                req = urllib.request.Request(url, data=req_data, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=15) as response:
-                    res_data = response.read()
-                    q.put((True, res_data))
-            except Exception as e_thread:
-                q.put((False, e_thread))
+                import urllib.request
+                import json
+                import threading
+                import queue
+                import time as time_pkg
                 
-        t = threading.Thread(target=worker)
-        t.daemon = True
-        logger.info("Sending request to MAST REST API...")
-        t.start()
-        
-        try:
-            success, val = q.get(timeout=15)
-            if not success:
-                raise val
-            res = json.loads(val.decode('utf-8'))
-            if "data" not in res:
-                raise ValueError("No data field in MAST REST response")
-            df = pd.DataFrame(res["data"])
-        except queue.Empty:
-            raise TimeoutError("TIC query timed out after 15 seconds (wall-clock limit)")
-            
+                url = "https://mast.stsci.edu/api/v0/invoke"
+                payload = {
+                    "service": "Mast.Catalogs.Filtered.Tic",
+                    "format": "json",
+                    "params": {
+                        "columns": "ID,ra,dec,Tmag,Teff,rad,logg,contratio,priority,wdflag",
+                        "filters": [
+                            {"paramName": "Tmag", "values": [{"min": float(mag_range[0]), "max": float(mag_range[1])}]},
+                            {"paramName": "Teff", "values": [{"min": float(teff_range[0]), "max": float(teff_range[1])}]},
+                            {"paramName": "rad", "values": [{"min": float(radius_range[0]), "max": float(radius_range[1])}]},
+                            {"paramName": "objType", "values": ["STAR"]}
+                        ],
+                        "pagesize": int(max(2000, n_targets * 3))
+                    }
+                }
+                
+                q = queue.Queue()
+                def worker():
+                    try:
+                        req_data = f"request={json.dumps(payload)}".encode("utf-8")
+                        req = urllib.request.Request(url, data=req_data, headers={'User-Agent': 'Mozilla/5.0'})
+                        with urllib.request.urlopen(req, timeout=60) as response:
+                            res_data = response.read()
+                            q.put((True, res_data))
+                    except Exception as e_thread:
+                        q.put((False, e_thread))
+                        
+                t = threading.Thread(target=worker)
+                t.daemon = True
+                t.start()
+                
+                try:
+                    success, val = q.get(timeout=60)
+                    if not success:
+                        raise val
+                    res = json.loads(val.decode('utf-8'))
+                    if "data" not in res:
+                        raise ValueError("No data field in MAST REST response")
+                    df = pd.DataFrame(res["data"])
+                    query_success = True
+                    break
+                except queue.Empty:
+                    raise TimeoutError("TIC query timed out after 60 seconds (wall-clock limit)")
+            except Exception as e_attempt:
+                logger.warning(f"Attempt {attempt}/3 failed: {e_attempt}")
+                if attempt < 3:
+                    time_pkg.sleep(5)
+                else:
+                    raise e_attempt
+
+        if not query_success:
+            raise RuntimeError("All MAST query attempts failed.")
         required_cols = ["ID", "ra", "dec", "Tmag", "Teff", "rad", "logg",
                          "contratio", "priority", "wdflag"]
         existing_cols = [c for c in required_cols if c in df.columns]
@@ -276,10 +289,14 @@ def build_target_list(
                         local_files.append(Path(root) / file)
                         
         fallback_ids = []
+        oldest_mtime = None
         for lf in local_files:
             for p in [lf, Path(".") / lf, Path("/kaggle/working") / lf]:
                 if p.exists():
                     try:
+                        mtime = os.path.getmtime(p)
+                        if oldest_mtime is None or mtime < oldest_mtime:
+                            oldest_mtime = mtime
                         df_lf = pd.read_csv(p)
                         if "tic_id" in df_lf.columns:
                             fallback_ids.extend(df_lf["tic_id"].astype(int).tolist())
@@ -288,6 +305,11 @@ def build_target_list(
         
         fallback_ids = list(set(fallback_ids))
         if fallback_ids:
+            fallback_age_days = "?"
+            if oldest_mtime is not None:
+                import time as time_pkg
+                fallback_age_days = int((time_pkg.time() - oldest_mtime) / 86400)
+            logger.warning(f"[WARNING] USING STALE FALLBACK CATALOG ({fallback_age_days} days old, {len(fallback_ids)} stars) - fresh MAST query failed")
             logger.info(f"Loaded {len(fallback_ids)} targets from local fallback catalogs.")
             fallback_ids = [t for t in fallback_ids if t not in already_processed]
             logger.info(f"Remaining after excluding already processed: {len(fallback_ids)}")
@@ -1038,6 +1060,9 @@ def run_discovery_session(
 
     pbar = tqdm(total=len(target_list), desc="Discovery", unit="star")
 
+    import tensorflow as tf
+    logger.info(f"[DEVICE] TensorFlow running on: {tf.test.gpu_device_name() or 'CPU'}")
+
     for i, tic_id in enumerate(target_list):
         tic_id = int(tic_id)
         n_attempted += 1
@@ -1225,7 +1250,7 @@ def generate_session_summary(
     except Exception as e:
         logger.warning(f"Could not load results.csv: {e}")
 
-    n_cumulative = len(df_all) if df_all is not None else 0
+    n_cumulative = max(len(df_all) if df_all is not None else 0, session_data.get("stars_processed", 0))
 
     # ── Counts from this session ──────────────────────────────────────────────
     n_keep    = session_data.get("keep", 0)

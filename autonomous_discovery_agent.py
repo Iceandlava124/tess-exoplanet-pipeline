@@ -116,6 +116,23 @@ for folder in ["KEEP", "FLAG", "DISCARD", "plots/flag_analysis", "reports", "fig
     os.makedirs(RESULTS_DIR / folder, exist_ok=True)
     os.makedirs(WORKING_DIR / folder, exist_ok=True)
 
+# Copy dataset metadata so that Kaggle CLI pushes work
+src_meta = PIPELINE_DIR / "results" / "dataset-metadata.json"
+dest_meta = RESULTS_DIR / "dataset-metadata.json"
+if src_meta.exists():
+    shutil.copy2(src_meta, dest_meta)
+    print("SUCCESS: dataset-metadata.json copied to results directory.")
+else:
+    import json
+    meta = {
+        "title": "TESS Exoplanet Discovery Results",
+        "id": KAGGLE_DATASET,
+        "licenses": [{"name": "CC0-1.0"}]
+    }
+    with open(dest_meta, "w") as f:
+        json.dump(meta, f, indent=4)
+    print("SUCCESS: Generated dataset-metadata.json in results directory.")
+
 # ── 3. RESOURCE LOADING ──────────────────────────────────────
 # Copy weights, target files, and caching databases
 try:
@@ -147,6 +164,71 @@ try:
     input_csv = INPUT_RESULTS_DIR / "results.csv"
     if input_csv.exists():
         shutil.copy2(input_csv, OUTPUT_RESULTS_CSV)
+        # Parse using python csv module to be robust against schema/column count variations
+        import csv
+        rows = []
+        COLUMNS_22 = [
+            "tic_id", "session_label", "decision", "final_class", "confidence",
+            "period", "period_err", "depth", "depth_err", "duration",
+            "duration_err", "snr", "flag_reasons", "rp_earth", "is_new_discovery",
+            "alias_rejected", "fpp", "combined_fpp", "fpp_status",
+            "contamination_ratio", "n_nearby_gaia_stars", "n_sectors_consistent"
+        ]
+        with open(OUTPUT_RESULTS_CSV, "r", newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            try:
+                header = next(reader)
+            except StopIteration:
+                header = []
+            
+            for row in reader:
+                if not row:
+                    continue
+                new_row = {}
+                if len(row) == 12:
+                    new_row["tic_id"] = row[0]
+                    new_row["session_label"] = ""
+                    new_row["decision"] = row[1]
+                    new_row["final_class"] = row[2]
+                    new_row["confidence"] = row[3]
+                    new_row["period"] = row[4]
+                    new_row["period_err"] = row[5]
+                    new_row["depth"] = row[6]
+                    new_row["depth_err"] = row[7]
+                    new_row["duration"] = row[8]
+                    new_row["duration_err"] = row[9]
+                    new_row["snr"] = row[10]
+                    new_row["flag_reasons"] = row[11]
+                    new_row["rp_earth"] = "0.0"
+                    new_row["is_new_discovery"] = "False"
+                    new_row["alias_rejected"] = "False"
+                    new_row["fpp"] = "None"
+                    new_row["combined_fpp"] = "None"
+                    new_row["fpp_status"] = "skipped"
+                    new_row["contamination_ratio"] = "None"
+                    new_row["n_nearby_gaia_stars"] = "0"
+                    new_row["n_sectors_consistent"] = "1"
+                else:
+                    for i, col in enumerate(COLUMNS_22):
+                        new_row[col] = row[i] if i < len(row) else ""
+                rows.append(new_row)
+        
+        # Deduplicate
+        unique_rows = {}
+        for r in rows:
+            if r["tic_id"]:
+                try:
+                    unique_rows[int(r["tic_id"])] = r
+                except ValueError:
+                    pass
+        dedup_rows = list(unique_rows.values())
+        
+        # Save back
+        with open(OUTPUT_RESULTS_CSV, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=COLUMNS_22)
+            writer.writeheader()
+            writer.writerows(dedup_rows)
+            
         df_previous = pd.read_csv(OUTPUT_RESULTS_CSV)
         if "tic_id" in df_previous.columns:
             already_done = set(df_previous["tic_id"].astype(int).tolist())
@@ -240,8 +322,78 @@ except Exception as e:
 # ── 8. EXPORT AND AUTO-UPDATE RESULTS ON KAGGLE ─────────────
 # Push the updated database back to your Kaggle dataset.
 print("\nExporting files and pushing results to Kaggle...")
+
+# Deduplicate results.csv before exporting
+if OUTPUT_RESULTS_CSV.exists():
+    try:
+        import csv
+        COLUMNS_22 = [
+            "tic_id", "session_label", "decision", "final_class", "confidence",
+            "period", "period_err", "depth", "depth_err", "duration",
+            "duration_err", "snr", "flag_reasons", "rp_earth", "is_new_discovery",
+            "alias_rejected", "fpp", "combined_fpp", "fpp_status",
+            "contamination_ratio", "n_nearby_gaia_stars", "n_sectors_consistent"
+        ]
+        rows = []
+        with open(OUTPUT_RESULTS_CSV, "r", newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            header = next(reader, [])
+            for r in reader:
+                if not r:
+                    continue
+                new_r = {}
+                if len(r) == 12:
+                    new_r["tic_id"] = r[0]
+                    new_r["session_label"] = ""
+                    new_r["decision"] = r[1]
+                    new_r["final_class"] = r[2]
+                    new_r["confidence"] = r[3]
+                    new_r["period"] = r[4]
+                    new_r["period_err"] = r[5]
+                    new_r["depth"] = r[6]
+                    new_r["depth_err"] = r[7]
+                    new_r["duration"] = r[8]
+                    new_r["duration_err"] = r[9]
+                    new_r["snr"] = r[10]
+                    new_r["flag_reasons"] = r[11]
+                    new_r["rp_earth"] = "0.0"
+                    new_r["is_new_discovery"] = "False"
+                    new_r["alias_rejected"] = "False"
+                    new_r["fpp"] = "None"
+                    new_r["combined_fpp"] = "None"
+                    new_r["fpp_status"] = "skipped"
+                    new_r["contamination_ratio"] = "None"
+                    new_r["n_nearby_gaia_stars"] = "0"
+                    new_r["n_sectors_consistent"] = "1"
+                else:
+                    for i, col in enumerate(COLUMNS_22):
+                        new_r[col] = r[i] if i < len(r) else ""
+                rows.append(new_r)
+        
+        unique_rows = {}
+        duplicate_count = 0
+        for r in rows:
+            if r["tic_id"]:
+                tic_int = int(r["tic_id"])
+                if tic_int in unique_rows:
+                    duplicate_count += 1
+                unique_rows[tic_int] = r
+        
+        dedup_rows = list(unique_rows.values())
+        if duplicate_count > 0:
+            print(f"WARNING: {duplicate_count} duplicate TIC IDs found in results.csv — deduplicating")
+            with open(OUTPUT_RESULTS_CSV, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=COLUMNS_22)
+                writer.writeheader()
+                writer.writerows(dedup_rows)
+            print(f"   Deduplicated: {len(dedup_rows)} unique stars remain")
+        else:
+            print("Deduplication check complete: 0 duplicates found.")
+    except Exception as e_dedup:
+        print(f"Warning during deduplication: {e_dedup}")
+
 export_map = {
-    RESULTS_DIR / "results.csv":                   "results_cumulative.csv",
+    OUTPUT_RESULTS_CSV:                            "results_cumulative.csv",
     RESULTS_DIR / "candidates_submission.csv":     "candidates_all.csv",
     RESULTS_DIR / "manual_review_queue.csv":       "review_queue_latest.csv",
     RESULTS_DIR / "DISCOVERY_LOG.md":              "DISCOVERY_LOG.md",
