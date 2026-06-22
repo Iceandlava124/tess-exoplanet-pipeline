@@ -20,6 +20,8 @@ import zipfile
 import subprocess
 from datetime import date
 from pathlib import Path
+import pandas as pd
+
 
 # ── USER CONFIGURATION ──────────────────────────────────────
 GITHUB_REPO    = "https://github.com/Iceandlava124/tess-exoplanet-pipeline.git"
@@ -82,6 +84,8 @@ try:
     elif (INPUT_DIR / "src").exists():
         print("Copying pipeline code from dataset resources...")
         shutil.copytree(INPUT_DIR / "src", PIPELINE_DIR / "src", dirs_exist_ok=True)
+        if (INPUT_DIR / "flag_analyzer.py").exists():
+            shutil.copy2(INPUT_DIR / "flag_analyzer.py", PIPELINE_DIR / "flag_analyzer.py")
         print("SUCCESS: Code copied.")
     else:
         if (PIPELINE_DIR / ".git").exists():

@@ -34,12 +34,13 @@ with zipfile.ZipFile(src_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
         zipf.write(file, rel_path)
     
     # Write root runner scripts directly to zip root
-    root_runners = ["kaggle_discovery_runner.py", "autonomous_discovery_agent.py"]
+    root_runners = ["kaggle_discovery_runner.py", "autonomous_discovery_agent.py", "flag_analyzer.py"]
     for runner in root_runners:
         runner_path = ROOT / runner
         if runner_path.exists():
             zipf.write(runner_path, runner)
-print("SUCCESS: Source and runner files zipped successfully.")
+print("SUCCESS: Source, runner, and analyzer files zipped successfully.")
+
 
 # 2. Copy the training targets CSV
 targets_src = ROOT / "data" / "training_targets.csv"
@@ -78,6 +79,17 @@ if batch_src.exists():
 else:
     print("ERROR: batch_processor.py not found!")
     sys.exit(1)
+
+# 4b. Copy flag_analyzer.py
+flag_src = ROOT / "flag_analyzer.py"
+flag_dest = DATASET_DIR / "flag_analyzer.py"
+if flag_src.exists():
+    print(f"Copying flag_analyzer.py to dataset folder...")
+    shutil.copy2(flag_src, flag_dest)
+    print("SUCCESS: flag_analyzer.py copied.")
+else:
+    print("WARNING: flag_analyzer.py not found!")
+
 
 # 5. Copy the model weights
 models = ["random_forest.pkl", "cnn_classifier.h5"]
