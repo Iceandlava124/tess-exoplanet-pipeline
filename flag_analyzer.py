@@ -142,6 +142,10 @@ def load_star_data(tic_id: int) -> dict:
         if fits_files:
             lc = lk.io.read(str(fits_files[0]))
             time, flux, flux_err = preprocess_lightcurve(lc)
+            # Ensure plain ndarray (MaskedArray breaks downstream shape checks)
+            time     = np.asarray(time,     dtype=float)
+            flux     = np.asarray(flux,     dtype=float)
+            flux_err = np.asarray(flux_err, dtype=float)
             data["time"]     = time
             data["flux"]     = flux
             data["flux_err"] = flux_err
@@ -160,6 +164,10 @@ def load_star_data(tic_id: int) -> dict:
             if fits_path:
                 lc = lk.io.read(str(fits_path))
                 time, flux, flux_err = preprocess_lightcurve(lc)
+                # Ensure plain ndarray (MaskedArray breaks downstream shape checks)
+                time     = np.asarray(time,     dtype=float)
+                flux     = np.asarray(flux,     dtype=float)
+                flux_err = np.asarray(flux_err, dtype=float)
                 data["time"]     = time
                 data["flux"]     = flux
                 data["flux_err"] = flux_err
@@ -827,44 +835,55 @@ def check_pixel_contamination(tic_id, sector, period, epoch, duration):
             contamination_ratio = float(contamination_ratio)
         
         # Count Gaia stars within 1 arcminute brighter than mag+3
-        from astroquery.gaia import Gaia
-        from astropy.coordinates import SkyCoord
-        import astropy.units as u
-        
-        coord = SkyCoord(
-            ra=tpf.ra, dec=tpf.dec, unit="deg"
-        )
-        gaia_results = Gaia.query_object_async(
-            coordinate=coord, radius=u.Quantity(1.0, u.arcmin)
-        )
-        n_nearby_stars = len(gaia_results) if gaia_results else 0
+        # Wrap in a try-except to handle Gaia/MAST server outages or timeouts gracefully,
+        # falling back to local CROWDSAP checks only.
+        n_nearby_stars = 0
+        gaia_failed = False
+        try:
+            from astroquery.gaia import Gaia
+            from astropy.coordinates import SkyCoord
+            import astropy.units as u
+            
+            coord = SkyCoord(
+                ra=tpf.ra, dec=tpf.dec, unit="deg"
+            )
+            gaia_results = Gaia.query_object_async(
+                coordinate=coord, radius=u.Quantity(1.0, u.arcmin)
+            )
+            n_nearby_stars = len(gaia_results) if gaia_results else 0
+        except Exception as ge:
+            logger.warning(f"Gaia query failed or timed out for TIC {tic_id}: {ge}. Falling back to local CROWDSAP header check.")
+            gaia_failed = True
+            n_nearby_stars = 0
         
         # Flag as contaminated if:
         # contamination ratio > 0.1 (CROWDSAP < 0.9) OR more than 3 nearby bright stars
         is_contaminated = (
             (contamination_ratio is not None and 
              contamination_ratio < 0.9) or
-            n_nearby_stars > 3
+            (n_nearby_stars > 3)
         )
         
         # Save results to local SQLite cache
-        try:
-            save_pixel_contamination(tic_id, sector, contamination_ratio, n_nearby_stars)
-            actual_sector = getattr(tpf, 'sector', None)
-            if actual_sector is not None and actual_sector != sector:
-                save_pixel_contamination(tic_id, actual_sector, contamination_ratio, n_nearby_stars)
-        except Exception as ce:
-            logger.warning(f"Failed to write pixel contamination to cache: {ce}")
+        # We only save to cache if Gaia did not fail, to avoid caching incomplete/fallback query results
+        if not gaia_failed:
+            try:
+                save_pixel_contamination(tic_id, sector, contamination_ratio, n_nearby_stars)
+                actual_sector = getattr(tpf, 'sector', None)
+                if actual_sector is not None and actual_sector != sector:
+                    save_pixel_contamination(tic_id, actual_sector, contamination_ratio, n_nearby_stars)
+            except Exception as ce:
+                logger.warning(f"Failed to write pixel contamination to cache: {ce}")
         
+        note_suffix = " (Gaia query failed, using CROWDSAP fallback)" if gaia_failed else ""
         return {
             "status": "ok",
             "contamination_ratio": contamination_ratio,
-            "n_nearby_gaia_stars": n_nearby_stars,
+            "n_nearby_gaia_stars": n_nearby_stars if not gaia_failed else None,
             "contaminated": is_contaminated,
             "contamination_note": (
                 f"CROWDSAP={contamination_ratio:.3f}, " if contamination_ratio is not None else ""
-                f"{n_nearby_stars} nearby Gaia stars"
-            )
+            ) + (f"{n_nearby_stars} nearby Gaia stars" if not gaia_failed else "Gaia query failed") + note_suffix
         }
         
     except Exception as e:

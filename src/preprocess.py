@@ -190,13 +190,14 @@ def detrend_savgol(
         return detrended
 
     # Replace NaNs with linear interpolation before filtering
-    nans = np.isnan(flux)
-    if nans.all():
+    nans = np.isnan(np.asarray(flux, dtype=float))
+    valid_mask = ~nans
+    if not valid_mask.any():   # no finite points at all → nothing to interpolate
         return flux
 
     x = np.arange(len(flux))
     flux_interp = flux.copy()
-    flux_interp[nans] = np.interp(x[nans], x[~nans], flux[~nans])
+    flux_interp[nans] = np.interp(x[nans], x[valid_mask], flux[valid_mask])
 
     # Ensure window_length is odd
     if window_length % 2 == 0:
@@ -264,18 +265,42 @@ def preprocess_lightcurve(
         NaN positions are consistent across all three.
     """
     # Try to get PDCSAP flux (pre-corrected systematics)
+    is_ppm = False
+    # Try to get PDCSAP flux (pre-corrected systematics)
+    is_ppm = False
     try:
         if hasattr(lc, "pdcsap_flux"):
             flux = lc.pdcsap_flux.value
             flux_err = lc.pdcsap_flux_err.value
+            is_ppm = str(getattr(lc.pdcsap_flux, "unit", "")) == "ppm"
         else:
             flux = lc.flux.value
             flux_err = lc.flux_err.value
+            is_ppm = str(getattr(lc.flux, "unit", "")) == "ppm"
         time = lc.time.value
     except Exception:
         flux = np.array(lc.flux)
         flux_err = np.ones_like(flux) * np.nanstd(flux) * 0.01
         time = np.arange(len(flux), dtype=float)
+        is_ppm = False
+
+    # ── Sanitise: cast MaskedArrays to plain float ndarrays ─────────────────
+    # lightkurve can return astropy MaskedArrays for heavily quality-flagged
+    # light curves. numpy.ma.MaskedArray.all() returns masked constant "--",
+    # not True/False — so bool(nans.all()) returns False even when all-NaN,
+    # breaking our NaN guard. Calling .filled(np.nan) converts masked elements
+    # to ordinary NaN and strips the mask wrapper entirely.
+    if isinstance(flux, np.ma.MaskedArray):
+        flux = np.asarray(flux.filled(np.nan), dtype=float)
+    if isinstance(flux_err, np.ma.MaskedArray):
+        flux_err = np.asarray(flux_err.filled(np.nan), dtype=float)
+    if isinstance(time, np.ma.MaskedArray):
+        time = np.asarray(time.filled(np.nan), dtype=float)
+
+    if is_ppm:
+        logger.info("Detecting flux unit is 'ppm' (TASOC data product). Converting to normalized scale around 1.0.")
+        flux = 1.0 + (flux / 1e6)
+        flux_err = flux_err / 1e6
 
     # Calculate median flux before normalisation to normalise errors consistently
     median_flux = np.nanmedian(flux)
@@ -289,10 +314,47 @@ def preprocess_lightcurve(
     flux = sigma_clip(flux, sigma=sigma_clip_threshold)
 
     # ==========================================
+    # LOMB-SCARGLE VARIABILITY ANALYSIS (First pass on raw flux)
+    # ==========================================
+    # We run Lomb-Scargle first to determine if the star has significant variability,
+    # and size the detrending windows dynamically for both Stage 1 and Stage 2.
+    p_var = np.nan
+    w_days = 3.5  # Raised default — protects transits up to ~7 hours duration
+    fap = 1.0
+    try:
+        from astropy.timeseries import LombScargle
+        ls_mask = np.isfinite(time) & np.isfinite(flux)
+        t_ls = time[ls_mask]
+        f_ls = flux[ls_mask] - np.nanmedian(flux[ls_mask])
+        if len(t_ls) > 100:
+            frequency, power = LombScargle(t_ls, f_ls).autopower(
+                minimum_frequency=1.0/10.0, 
+                maximum_frequency=1.0/0.1
+            )
+            max_power = np.max(power)
+            try:
+                fap = float(LombScargle(t_ls, f_ls).false_alarm_probability(max_power))
+            except Exception:
+                fap = 1.0
+                
+            if fap < 0.01:
+                best_freq = frequency[np.argmax(power)]
+                p_var = 1.0 / best_freq
+                # Optimal window is 3x the variability period, capped between 0.5 and 3.5 days
+                w_days = np.clip(3 * p_var, 0.5, 3.5)
+                logger.info(f"Stellar variability detected (FAP={fap:.2e}, period={p_var:.2f}d) -> using adaptive window={w_days:.2f}d")
+            else:
+                w_days = 3.5
+                logger.info(f"Quiet star (FAP={fap:.3f} >= 0.01) -> using safe default window of {w_days:.2f}d")
+    except Exception as e:
+        logger.warning(f"Lomb-Scargle periodogram calculation failed: {e}. Defaulting to {w_days:.2f}d window.")
+
+    # ==========================================
     # STAGE 1: Wotan biweight — robust rough detrend
     # ==========================================
-    # Removes large-scale stellar trends, resistant to remaining outliers
-    wotan_window = 0.5
+    # Removes large-scale stellar trends, resistant to remaining outliers.
+    # Uses the dynamically sized w_days window instead of a hardcoded 0.5d window.
+    wotan_window = w_days
     wotan_trend_removed = False
     flux_stage1 = flux.copy()
     try:
@@ -300,49 +362,25 @@ def preprocess_lightcurve(
             time, flux, window_length=wotan_window
         )
         wotan_trend_removed = True
-        logger.info(f"Stage 1 Detrending: wotan biweight (window={wotan_window}d) successful.")
+        logger.info(f"Stage 1 Detrending: wotan biweight (window={wotan_window:.2f}d) successful.")
     except Exception as e:
         logger.warning(f"Stage 1 Wotan detrending failed: {e}. Skipping straight to Stage 2.")
 
     # ==========================================
     # STAGE 2: Adaptive Savitzky-Golay — fine-tuned per-star pass
     # ==========================================
-    # Uses the EXISTING Lomb-Scargle logic to measure this star's own
-    # variability period, then sizes the Savgol window accordingly.
-    # This now runs on the wotan-cleaned flux, not the raw flux.
-    p_var = np.nan
-    w_days = np.nan
-    try:
-        from astropy.timeseries import LombScargle
-        # Filter out NaNs from time and flux for LS periodogram calculation
-        ls_mask = np.isfinite(time) & np.isfinite(flux_stage1)
-        t_ls = time[ls_mask]
-        f_ls = flux_stage1[ls_mask]
-        if len(t_ls) > 100:
-            # Search frequency range corresponding to periods between 0.1 and 10 days
-            frequency, power = LombScargle(t_ls, f_ls).autopower(
-                minimum_frequency=1.0/10.0, 
-                maximum_frequency=1.0/0.1
-            )
-            best_freq = frequency[np.argmax(power)]
-            p_var = 1.0 / best_freq
-            
-            # Optimal window is 3x the variability timescale, capped between 0.5 and 2.0 days
-            # Increased minimum from 0.1 to 0.5 days to prevent the "Detrending Trap" from erasing transits.
-            w_days = np.clip(3 * p_var, 0.5, 2.0)
-            dt = np.nanmedian(np.diff(time))
-            if dt > 0:
-                adaptive_window = int(w_days / dt)
-                if adaptive_window % 2 == 0:
-                    adaptive_window += 1
-                # Savitzky-Golay window must be greater than polyorder (default 3)
-                if adaptive_window < 5:
-                    adaptive_window = 5
-                
-                logger.info(f"Stage 2 Adaptive Detrending: Stellar variability period={p_var:.2f}d -> Window={w_days:.2f}d ({adaptive_window} points)")
-                window_length = adaptive_window
-    except Exception as e:
-        logger.warning(f"Failed to calculate adaptive detrending window: {e}. Falling back to default window of {window_length} points.")
+    # Apply Savgol smoothing on the Stage 1 output using the same window length
+    dt = np.nanmedian(np.diff(time))
+    if dt > 0:
+        adaptive_window = int(w_days / dt)
+        if adaptive_window % 2 == 0:
+            adaptive_window += 1
+        if adaptive_window < 5:
+            adaptive_window = 5
+        window_length = adaptive_window
+        logger.info(f"Stage 2 Adaptive Detrending points: {window_length} points based on {w_days:.2f}d window")
+    else:
+        logger.warning("Could not calculate dt for adaptive window. Using default window_length.")
 
     flux_final = detrend_savgol(flux_stage1, window_length=window_length, time=time)
 

@@ -65,6 +65,25 @@ def run_tls(time: np.ndarray, flux: np.ndarray, flux_err: Optional[np.ndarray] =
     finding 10-20% more small planets than BLS.
     Drop-in replacement for run_bls() — same inputs, same output format.
     """
+    # ── Insufficient data guard ───────────────────────────────────────────────
+    _MIN_POINTS = 100
+    if len(time) < _MIN_POINTS:
+        logger.warning(
+            f"run_tls: only {len(time)} data points (< {_MIN_POINTS} required). "
+            f"Returning empty result — star will be discarded."
+        )
+        _empty_periods = np.linspace(0.5, 27.0, 100)
+        return _empty_periods, np.zeros(100), {
+            "status": "insufficient_data",
+            "period":   1.0,
+            "snr":      0.0,
+            "depth":    0.0,
+            "duration": 0.0,
+            "t0":       0.0,
+            "epoch":    0.0,
+            "alias_rejected": False,
+        }
+
     # Fallback to BLS if transitleastsquares is not available
     if not TLS_AVAILABLE:
         logger.warning("transitleastsquares not available. Falling back to run_bls.")
@@ -74,11 +93,42 @@ def run_tls(time: np.ndarray, flux: np.ndarray, flux_err: Optional[np.ndarray] =
         # Clean the arrays first — TLS requires no NaN values
         time_clean, flux_clean = cleaned_array(time, flux)
         
-        # Run TLS with automatic period grid
+        # 1. Run a fast BLS search on a coarse grid of 10,000 periods to locate the candidate period
+        bls_periods = np.exp(np.linspace(np.log(0.5), np.log(20.0), 10000))
+        
+        # Dynamically limit max duration to be strictly less than the minimum period (0.5d) to prevent astropy errors
+        max_dur_limit_hr = (bls_periods[0] * 24.0) - 0.1
+        duration_candidates = np.array([1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0])
+        bls_durations_candidates = duration_candidates[duration_candidates < max_dur_limit_hr]
+        if len(bls_durations_candidates) == 0:
+            bls_durations_candidates = np.array([max_dur_limit_hr / 2.0])
+        bls_durations = bls_durations_candidates / 24.0  # days
+        
+        # Estimate standard deviation of flux for BLS weights
+        bls_flux_err = np.ones_like(flux_clean) * np.std(flux_clean) * 0.01
+        bls = BoxLeastSquares(time_clean * u.day, flux_clean, dy=bls_flux_err)
+        
+        periodogram = bls.power(
+            bls_periods * u.day,
+            bls_durations * u.day,
+            method="fast",
+            objective="snr",
+        )
+        
+        best_bls_idx = np.argmax(periodogram.power)
+        peak_bls = float(bls_periods[best_bls_idx])
+        bls_power_spectrum = np.array(periodogram.power)
+        
+        # Widen the TLS window: ±15% of peak BLS period, minimum ±0.5d
+        tls_window = max(0.5, peak_bls * 0.15)
+        period_min_tls = max(0.5, peak_bls - tls_window)
+        period_max_tls = min(27.0, peak_bls + tls_window)   # extend max from 20→27d
+        
+        # Run TLS with constrained period range
         model = transitleastsquares(time_clean, flux_clean)
         results = model.power(
-            minimum_period=0.5,
-            maximum_period=20.0,
+            period_min=period_min_tls,
+            period_max=period_max_tls,
             show_progress_bar=False
         )
         
@@ -90,13 +140,36 @@ def run_tls(time: np.ndarray, flux: np.ndarray, flux_err: Optional[np.ndarray] =
             # Mask out the alias period and find next peak
             mask = transit_mask(time_clean, best_period, results.duration, results.T0)
             
-            # Re-run on masked data if alias detected
-            model2 = transitleastsquares(time_clean[~mask], flux_clean[~mask])
-            results2 = model2.power(
-                minimum_period=0.5,
-                maximum_period=20.0,
-                show_progress_bar=False
-            )
+            # Re-run BLS on masked data
+            time_clean2 = time_clean[~mask]
+            flux_clean2 = flux_clean[~mask]
+            
+            if len(time_clean2) > 100:
+                bls_flux_err2 = np.ones_like(flux_clean2) * np.std(flux_clean2) * 0.01
+                bls2 = BoxLeastSquares(time_clean2 * u.day, flux_clean2, dy=bls_flux_err2)
+                periodogram2 = bls2.power(
+                    bls_periods * u.day,
+                    bls_durations * u.day,
+                    method="fast",
+                    objective="snr",
+                )
+                peak_bls2 = float(bls_periods[np.argmax(periodogram2.power)])
+                
+                # Re-run TLS on masked data around the new BLS peak
+                period_min_tls2 = max(0.5, peak_bls2 - 0.2)
+                period_max_tls2 = min(20.0, peak_bls2 + 0.2)
+                
+                model2 = transitleastsquares(time_clean2, flux_clean2)
+                results2 = model2.power(
+                    period_min=period_min_tls2,
+                    period_max=period_max_tls2,
+                    show_progress_bar=False
+                )
+            else:
+                # If too few points remain after masking, force a below-threshold result
+                # to trigger alias rejection
+                results2 = results
+                results2.SDE = 0.0
             
             if results2.SDE < 5.0 or _is_alias(float(results2.period)):
                 # No clean period found — discard target
@@ -111,7 +184,7 @@ def run_tls(time: np.ndarray, flux: np.ndarray, flux_err: Optional[np.ndarray] =
                     "duration": float(results.duration),
                     "depth": 1.0 - float(results.depth),
                 }
-                return results.periods, results.power, results_dict
+                return bls_periods, bls_power_spectrum, results_dict
                 
             results = results2
             best_period = float(results.period)
@@ -128,7 +201,7 @@ def run_tls(time: np.ndarray, flux: np.ndarray, flux_err: Optional[np.ndarray] =
                 "duration": float(results.duration),
                 "depth": 1.0 - float(results.depth),
             }
-            return results.periods, results.power, results_dict
+            return bls_periods, bls_power_spectrum, results_dict
         
         # Check for secondary eclipse
         sec_check = check_secondary_eclipse(time_clean, flux_clean, best_period, float(results.T0), float(results.duration))
@@ -144,8 +217,8 @@ def run_tls(time: np.ndarray, flux: np.ndarray, flux_err: Optional[np.ndarray] =
             "depth": 1.0 - float(results.depth),
             "snr": float(results.SDE),
             "power_spectrum": {
-                "periods": results.periods.tolist(),
-                "power": results.power.tolist()
+                "periods": bls_periods.tolist(),
+                "power": bls_power_spectrum.tolist()
             },
             "odd_even_mismatch": float(results.odd_even_mismatch) if hasattr(results, "odd_even_mismatch") and results.odd_even_mismatch is not None else 0.0,
             "secondary_depth": float(secondary_depth),
@@ -154,7 +227,7 @@ def run_tls(time: np.ndarray, flux: np.ndarray, flux_err: Optional[np.ndarray] =
             "alias_rejected": False,
             "raw_results": results
         }
-        return results.periods, results.power, results_dict
+        return bls_periods, bls_power_spectrum, results_dict
         
     except Exception as e:
         logger.error(f"run_tls failed: {e}. Falling back to run_bls.")
@@ -170,6 +243,27 @@ def run_bls(
     n_periods: int = 50_000,
     duration_grid: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    """
+    Run the Box Least Squares algorithm to search for periodic transit signals.
+    """
+    # ── Insufficient data guard ───────────────────────────────────────────────
+    _MIN_POINTS = 100
+    if len(time) < _MIN_POINTS:
+        logger.warning(
+            f"run_bls: only {len(time)} data points (< {_MIN_POINTS} required). "
+            f"Returning empty result — star will be discarded."
+        )
+        _empty_periods = np.linspace(0.5, 27.0, 100)
+        return _empty_periods, np.zeros(100), {
+            "status": "insufficient_data",
+            "period":   1.0,
+            "snr":      0.0,
+            "depth":    0.0,
+            "duration": 0.0,
+            "t0":       0.0,
+            "epoch":    0.0,
+            "alias_rejected": False,
+        }
     """
     Run the Box Least Squares algorithm to search for periodic transit signals.
 
@@ -239,7 +333,7 @@ def run_bls(
             "snr": 0.0,
             "depth": 0.0,
             "duration": 0.1,
-            "t0": float(time[0]),
+            "t0": float(time[0]) if len(time) > 0 else 0.0,
         }
 
     # ── Helper: extract detailed stats at a given period index ──────────────
@@ -274,7 +368,7 @@ def run_bls(
                 "snr":      float(np.sqrt(max(0, power[idx]))),
                 "depth":    float(get_stat(stats, "depth", 0.0)),
                 "duration": float(get_stat(stats, "duration", 0.1)),
-                "t0":       float(get_stat(stats, "transit_time", time[0])),
+                "t0":       float(get_stat(stats, "transit_time", time[0] if len(time) > 0 else 0.0)),
             }
         except Exception as e:
             logger.warning(f"Failed to compute BLS stats at period {p:.4f} d: {e}")
@@ -284,7 +378,7 @@ def run_bls(
                 "snr":      float(np.sqrt(max(0, power[idx]))),
                 "depth":    0.0,
                 "duration": 0.1,
-                "t0":       float(time[0]),
+                "t0":       float(time[0]) if len(time) > 0 else 0.0,
             }
 
     # ── TESS Alias Rejection ─────────────────────────────────────────────────

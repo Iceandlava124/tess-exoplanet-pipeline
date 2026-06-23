@@ -145,7 +145,7 @@ def run_batch_processing(target_csv_path: str, limit: int = 1000):
             phase, folded_flux = fold_lightcurve(time_arr, flux_arr, bls_results['period'], bls_results['t0'])
             
             # 5. Run Forward Classifier
-            classification = classify_target(features, folded_flux)
+            classification = classify_target(features, (phase, folded_flux))
             
             # 6. Run Reverse Pipeline
             reverse_results = run_reverse_pipeline(time_arr, flux_arr, flux_err_arr, bls_results)

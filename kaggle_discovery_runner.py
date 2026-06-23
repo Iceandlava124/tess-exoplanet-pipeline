@@ -33,6 +33,37 @@ warnings.filterwarnings("ignore")
 
 logger = logging.getLogger("kaggle_runner")
 
+# ── Persistent FITS cache ────────────────────────────────────────────────
+# Points lightkurve at a directory that persists across sessions.
+# On Kaggle: mount the output dataset as an input in the next run.
+import lightkurve as lk
+_LK_CACHE = "data/lk_cache"
+if "RESULTS_DIR" in globals():
+    _LK_CACHE = os.path.join(RESULTS_DIR, "lk_cache")
+elif "RESULTS_DIR" in locals():
+    _LK_CACHE = os.path.join(locals()["RESULTS_DIR"], "lk_cache")
+else:
+    # Try default kaggle working directory
+    _LK_CACHE = os.path.join("/kaggle/working/results", "lk_cache")
+try:
+    os.makedirs(_LK_CACHE, exist_ok=True)
+    lk.conf.cache_dir = _LK_CACHE
+except Exception as e:
+    logger.warning(f"Failed to set lightkurve cache directory to {_LK_CACHE}: {e}")
+
+def _check_mast_health(timeout: int = 10) -> bool:
+    """Ping MAST to see if the API is reachable before starting the loop."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            "https://mast.stsci.edu/portal/Mashup/Mashup.asmx/columnsconfig",
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True
+    except Exception:
+        return False
+
 # ─── Known TESS systematic alias periods (copied from detect.py) ─────────────
 TESS_ALIAS_PERIODS = [0.5, 1.0, 2.0, 13.5]
 ALIAS_TOLERANCE    = 0.01
@@ -178,73 +209,95 @@ def build_target_list(
     sh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
     logger.addHandler(sh)
 
-    if already_processed is None:
-        already_processed = set()
+    if not _check_mast_health():
+        logger.warning("MAST API is currently unreachable. Raising exception to trigger cached fallback immediately.")
+        raise ConnectionError("MAST API unreachable (health check failed)")
 
     logger.info(f"Querying TESS Input Catalog for up to {n_targets} targets...")
 
-    # ── Query TIC via astroquery ──────────────────────────────────────────────
-    # ── Query TIC via direct MAST API with 60s timeout and 3x retry loop ─────────────────
+    # ── Query TIC via astroquery TAP query with REST fallback ────────────────
     try:
         query_success = False
-        for attempt in range(1, 4):
-            logger.info(f"Sending request to MAST REST API (Attempt {attempt}/3)...")
-            try:
-                import urllib.request
-                import json
-                import threading
-                import queue
-                import time as time_pkg
-                
-                url = "https://mast.stsci.edu/api/v0/invoke"
-                payload = {
-                    "service": "Mast.Catalogs.Filtered.Tic",
-                    "format": "json",
-                    "params": {
-                        "columns": "ID,ra,dec,Tmag,Teff,rad,logg,contratio,priority,wdflag",
-                        "filters": [
-                            {"paramName": "Tmag", "values": [{"min": float(mag_range[0]), "max": float(mag_range[1])}]},
-                            {"paramName": "Teff", "values": [{"min": float(teff_range[0]), "max": float(teff_range[1])}]},
-                            {"paramName": "rad", "values": [{"min": float(radius_range[0]), "max": float(radius_range[1])}]},
-                            {"paramName": "objType", "values": ["STAR"]}
-                        ],
-                        "pagesize": int(max(2000, n_targets * 3))
-                    }
-                }
-                
-                q = queue.Queue()
-                def worker():
-                    try:
-                        req_data = f"request={json.dumps(payload)}".encode("utf-8")
-                        req = urllib.request.Request(url, data=req_data, headers={'User-Agent': 'Mozilla/5.0'})
-                        with urllib.request.urlopen(req, timeout=60) as response:
-                            res_data = response.read()
-                            q.put((True, res_data))
-                    except Exception as e_thread:
-                        q.put((False, e_thread))
-                        
-                t = threading.Thread(target=worker)
-                t.daemon = True
-                t.start()
-                
+        import time as time_pkg
+        import random
+        from astroquery.mast import Catalogs
+
+        logger.info("Sending request to MAST TAP query via astroquery...")
+        try:
+            result_table = Catalogs.query_criteria(
+                catalog="TIC",
+                Tmag=[float(mag_range[0]), float(mag_range[1])],
+                Teff=[float(teff_range[0]), float(teff_range[1])],
+                rad=[float(radius_range[0]), float(radius_range[1])],
+                objType="STAR",
+                columns=["ID", "ra", "dec", "Tmag", "Teff", "rad", "logg",
+                         "contratio", "priority", "wdflag"],
+            )
+            df = result_table.to_pandas()
+            query_success = True
+            logger.info("MAST TAP query successful.")
+        except Exception as e_tap:
+            logger.warning(f"astroquery TAP query failed: {e_tap}. Falling back to REST API.")
+            
+            for attempt in range(1, 4):
+                logger.info(f"Sending request to MAST REST API (Attempt {attempt}/3)...")
                 try:
-                    success, val = q.get(timeout=60)
-                    if not success:
-                        raise val
-                    res = json.loads(val.decode('utf-8'))
-                    if "data" not in res:
-                        raise ValueError("No data field in MAST REST response")
-                    df = pd.DataFrame(res["data"])
-                    query_success = True
-                    break
-                except queue.Empty:
-                    raise TimeoutError("TIC query timed out after 60 seconds (wall-clock limit)")
-            except Exception as e_attempt:
-                logger.warning(f"Attempt {attempt}/3 failed: {e_attempt}")
-                if attempt < 3:
-                    time_pkg.sleep(5)
-                else:
-                    raise e_attempt
+                    import urllib.request
+                    import json
+                    import threading
+                    import queue
+                    
+                    url = "https://mast.stsci.edu/api/v0/invoke"
+                    payload = {
+                        "service": "Mast.Catalogs.Filtered.Tic",
+                        "format": "json",
+                        "params": {
+                            "columns": "ID,ra,dec,Tmag,Teff,rad,logg,contratio,priority,wdflag",
+                            "filters": [
+                                {"paramName": "Tmag", "values": [{"min": float(mag_range[0]), "max": float(mag_range[1])}]},
+                                {"paramName": "Teff", "values": [{"min": float(teff_range[0]), "max": float(teff_range[1])}]},
+                                {"paramName": "rad", "values": [{"min": float(radius_range[0]), "max": float(radius_range[1])}]},
+                                {"paramName": "objType", "values": ["STAR"]}
+                            ],
+                            "pagesize": int(max(2000, n_targets * 3))
+                        }
+                    }
+                    
+                    q = queue.Queue()
+                    def worker():
+                        try:
+                            req_data = f"request={json.dumps(payload)}".encode("utf-8")
+                            req = urllib.request.Request(url, data=req_data, headers={'User-Agent': 'Mozilla/5.0'})
+                            with urllib.request.urlopen(req, timeout=60) as response:
+                                res_data = response.read()
+                                q.put((True, res_data))
+                        except Exception as e_thread:
+                            q.put((False, e_thread))
+                            
+                    t = threading.Thread(target=worker)
+                    t.daemon = True
+                    t.start()
+                    
+                    try:
+                        success, val = q.get(timeout=60)
+                        if not success:
+                            raise val
+                        res = json.loads(val.decode('utf-8'))
+                        if "data" not in res:
+                            raise ValueError("No data field in MAST REST response")
+                        df = pd.DataFrame(res["data"])
+                        query_success = True
+                        break
+                    except queue.Empty:
+                        raise TimeoutError("TIC query timed out after 60 seconds (wall-clock limit)")
+                except Exception as e_attempt:
+                    logger.warning(f"Attempt {attempt}/3 failed: {e_attempt}")
+                    if attempt < 3:
+                        wait_s = (2 ** attempt) + random.uniform(0.0, 1.0)
+                        logger.info(f"Waiting {wait_s:.1f}s before retry...")
+                        time_pkg.sleep(wait_s)
+                    else:
+                        raise e_attempt
 
         if not query_success:
             raise RuntimeError("All MAST query attempts failed.")
@@ -571,6 +624,16 @@ def _run_single_star(
         quality_flag = "good" if len(time_arr) > 8000 else "poor"
         logger.info(f"TIC {tic_id} -- Step 2: Preprocessing complete. Data points: {len(time_arr)} (Quality: {quality_flag})")
 
+        # ── Hard stop: abort if preprocessing returned no usable data ────────────
+        if len(time_arr) < 100:
+            logger.warning(
+                f"TIC {tic_id} -- Step 2: Only {len(time_arr)} valid cadences after "
+                f"quality masking & sigma-clipping. Insufficient for transit search. Discarding."
+            )
+            result["flag_reasons"] = f"insufficient_data: {len(time_arr)} cadences post-QC"
+            _log_star(log_file, tic_id, "DISCARD", f"only_{len(time_arr)}_cadences")
+            return result
+
         # ── Step 3: TLS/BLS period search + alias rejection ──────────────────
         if fast:
             logger.info(f"TIC {tic_id} -- Step 3: Fast mode enabled. Running Box Least Squares (BLS)...")
@@ -629,7 +692,7 @@ def _run_single_star(
         phase_arr, folded_flux = fold_lightcurve(
             time_arr, flux_arr, bls_params["period"], bls_params["t0"]
         )
-        classification = classify_target(features, folded_flux)
+        classification = classify_target(features, (phase_arr, folded_flux))
         result["final_class"] = classification.get("label_name", "Unknown")
         result["confidence"]  = classification.get("confidence", 0.0)
         logger.info(f"TIC {tic_id} -- Step 5: ML Classification: {result['final_class']} (Confidence: {result['confidence']:.2%})")

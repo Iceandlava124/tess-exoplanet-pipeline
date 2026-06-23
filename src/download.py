@@ -282,65 +282,68 @@ def download_lightcurve(
             logger.info(f"TIC {tic_id}: already downloaded at {fits_pattern[0]}")
             return fits_pattern[0]
 
-    try:
-        if sector is None and stitch_multisector:
-            # Plain English: Search, download, and stitch all available sectors
-            logger.info(f"TIC {tic_id}: Searching for all available TESS sectors...")
-            search_result = lk.search_lightcurve(
-                f"TIC {tic_id}",
-                mission="TESS",
-                cadence=cadence,
-            )
+    import time as _time
+    import random as _random
 
-            if len(search_result) == 0:
-                logger.warning(f"TIC {tic_id}: no light curve found on MAST")
-                return None
+    for _attempt in range(3):
+        try:
+            if sector is None and stitch_multisector:
+                # Plain English: Search, download, and stitch all available sectors
+                logger.info(f"TIC {tic_id}: Searching for all available TESS sectors...")
+                search_result = lk.search_lightcurve(
+                    f"TIC {tic_id}",
+                    mission="TESS",
+                    cadence=cadence,
+                )
 
-            if len(search_result) == 1:
-                logger.info(f"TIC {tic_id}: only 1 sector found, downloading standard FITS...")
+                if len(search_result) == 0:
+                    logger.warning(f"TIC {tic_id}: no light curve found on MAST")
+                    return None
+
+                if len(search_result) == 1:
+                    logger.info(f"TIC {tic_id}: only 1 sector found, downloading standard FITS...")
+                    lc = search_result[0].download(download_dir=str(save_dir))
+                    fits_files = list(save_dir.glob(f"**/*{tic_id}*.fits"))
+                    if fits_files:
+                        return fits_files[0]
+                    return None
+
+                logger.info(f"TIC {tic_id}: downloading {len(search_result)} sectors...")
+                lc_collection = search_result.download_all(download_dir=str(save_dir))
+
+                logger.info(f"TIC {tic_id}: stitching {len(lc_collection)} sectors...")
+                stitched_lc = lc_collection.stitch()
+
+                stitched_path = save_dir / f"tic_{tic_id}_stitched.fits"
+                stitched_lc.to_fits(str(stitched_path), overwrite=True)
+                logger.info(f"TIC {tic_id}: successfully stitched and saved to {stitched_path}")
+                return stitched_path
+
+            else:
+                # Plain English: Download a single requested sector or default most recent
+                search_result = lk.search_lightcurve(
+                    f"TIC {tic_id}",
+                    mission="TESS",
+                    cadence=cadence,
+                    sector=sector,
+                )
+
+                if len(search_result) == 0:
+                    logger.warning(f"TIC {tic_id}: no light curve found on MAST")
+                    return None
+
                 lc = search_result[0].download(download_dir=str(save_dir))
                 fits_files = list(save_dir.glob(f"**/*{tic_id}*.fits"))
                 if fits_files:
                     return fits_files[0]
                 return None
 
-            logger.info(f"TIC {tic_id}: downloading {len(search_result)} sectors...")
-            lc_collection = search_result.download_all(download_dir=str(save_dir))
-
-            logger.info(f"TIC {tic_id}: stitching {len(lc_collection)} sectors...")
-            stitched_lc = lc_collection.stitch()
-
-            stitched_path = save_dir / f"tic_{tic_id}_stitched.fits"
-            stitched_lc.to_fits(str(stitched_path), overwrite=True)
-            logger.info(f"TIC {tic_id}: successfully stitched and saved to {stitched_path}")
-            return stitched_path
-
-        else:
-            # Plain English: Download a single requested sector or default most recent
-            search_result = lk.search_lightcurve(
-                f"TIC {tic_id}",
-                mission="TESS",
-                cadence=cadence,
-                sector=sector,
-            )
-
-            if len(search_result) == 0:
-                logger.warning(f"TIC {tic_id}: no light curve found on MAST")
+        except Exception as e:
+            logger.error(f"TIC {tic_id}: download attempt {_attempt+1}/3 failed — {e}")
+            if _attempt < 2:
+                _time.sleep(2 ** _attempt + _random.random())
+            else:
                 return None
-
-            lc = search_result[0].download(download_dir=str(save_dir))
-            fits_files = list(save_dir.glob(f"**/*{tic_id}*.fits"))
-            if fits_files:
-                return fits_files[0]
-            return None
-
-    except Exception as e:
-        logger.error(f"TIC {tic_id}: download failed — {e}")
-        return None
-
-    except Exception as e:
-        logger.error(f"TIC {tic_id}: download failed — {e}")
-        return None
 
 
 def batch_download(
