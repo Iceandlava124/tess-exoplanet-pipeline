@@ -24,12 +24,32 @@ def generate_pipeline_dashboard(results_csv_path: str, output_image_path: str) -
     WHY: Evaluates overall pipeline classification distributions and candidates for ISRO reporting.
     """
     try:
-        if not os.path.exists(results_csv_path):
-            return {"success": False, "error": f"Results file not found: {results_csv_path}"}
+        df = None
+        # Primary source: SQLite database
+        try:
+            from src.cache_manager import get_all_results
+            df = get_all_results()
+            if df is not None and len(df) > 0:
+                logger.info(f"Loaded {len(df)} results from SQLite database for dashboard.")
+            else:
+                logger.info("SQLite database results table is empty. Trying fallback to CSV.")
+                df = None
+        except Exception as db_err:
+            logger.warning(f"Could not load results from SQLite: {db_err}")
+            df = None
+
+        # Fallback source: results.csv (if SQLite was empty or failed)
+        if df is None or len(df) == 0:
+            if not os.path.exists(results_csv_path):
+                return {"success": False, "error": f"No SQLite records and results file not found: {results_csv_path}"}
+            try:
+                df = pd.read_csv(results_csv_path)
+                logger.info(f"Loaded {len(df)} results from CSV for dashboard.")
+            except Exception as csv_err:
+                return {"success": False, "error": f"Failed to load from both SQLite and CSV: {csv_err}"}
             
-        df = pd.read_csv(results_csv_path)
         if len(df) == 0:
-            return {"success": False, "error": "Results file is empty"}
+            return {"success": False, "error": "Combined results dataset is empty"}
             
         fig, axes = plt.subplots(2, 2, figsize=(16, 12))
         

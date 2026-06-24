@@ -59,7 +59,8 @@ def calculate_fpp(tic_id, period, epoch, depth, duration,
         import triceratops.triceratops as tr
         
         # Initialise TRICERATOPS with the TIC ID and sector
-        target = tr.target(ID=tic_id, sectors=[sector])
+        sec_list = [int(sector)] if sector is not None else [1]
+        target = tr.target(ID=tic_id, sectors=sec_list)
         
         # Calculate depth in parts per thousand for TRICERATOPS
         # If depth is fractional (e.g. 0.01), convert to parts per thousand by * 1000

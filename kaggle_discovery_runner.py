@@ -209,14 +209,14 @@ def build_target_list(
     sh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
     logger.addHandler(sh)
 
-    if not _check_mast_health():
-        logger.warning("MAST API is currently unreachable. Raising exception to trigger cached fallback immediately.")
-        raise ConnectionError("MAST API unreachable (health check failed)")
-
     logger.info(f"Querying TESS Input Catalog for up to {n_targets} targets...")
 
     # ── Query TIC via astroquery TAP query with REST fallback ────────────────
     try:
+        if not _check_mast_health():
+            logger.warning("MAST API is currently unreachable. Raising exception to trigger cached fallback immediately.")
+            raise ConnectionError("MAST API unreachable (health check failed)")
+
         query_success = False
         import time as time_pkg
         import random
