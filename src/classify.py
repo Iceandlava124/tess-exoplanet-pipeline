@@ -200,6 +200,17 @@ def classify_with_cnn(
     if model is None:
         model = load_cnn()
 
+    # Normalize input: extract flux if phase-folded input is passed as a tuple/list/2D array of (phase, flux)
+    if isinstance(phase_folded_lc, (tuple, list)) and len(phase_folded_lc) == 2:
+        phase_folded_lc = np.asarray(phase_folded_lc[1])
+    else:
+        phase_folded_lc = np.asarray(phase_folded_lc)
+        if phase_folded_lc.ndim == 2:
+            if phase_folded_lc.shape[0] == 2:
+                phase_folded_lc = phase_folded_lc[1]
+            elif phase_folded_lc.shape[1] == 2:
+                phase_folded_lc = phase_folded_lc[:, 1]
+
     # Resample to n_bins if needed
     if len(phase_folded_lc) != n_bins:
         from scipy.interpolate import interp1d
