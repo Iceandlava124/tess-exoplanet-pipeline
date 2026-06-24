@@ -300,7 +300,39 @@ def build_target_list(
                         raise e_attempt
 
         if not query_success:
-            raise RuntimeError("All MAST query attempts failed.")
+            logger.warning("All MAST query attempts failed. Trying VizieR (CDS Strasbourg) TICv8 mirror as backup...")
+            try:
+                from astroquery.vizier import Vizier
+                # Set row limit to n_targets * 3
+                v = Vizier(columns=["TIC", "RAJ2000", "DEJ2000", "Tmag", "Teff", "Rad", "logg", "contratio", "priority", "wdflg"])
+                v.ROW_LIMIT = int(max(2000, n_targets * 3))
+                query_str = f"I/354/tic8"
+                # Query constraints based on criteria
+                result_viz = v.query_constraints(
+                    catalog=query_str,
+                    Tmag=f"{mag_range[0]}..{mag_range[1]}",
+                    Teff=f"{teff_range[0]}..{teff_range[1]}",
+                    Rad=f"{radius_range[0]}..{radius_range[1]}",
+                    objType="=0" # 0 represents star in TIC
+                )
+                if result_viz and len(result_viz) > 0:
+                    viz_table = result_viz[0]
+                    df = viz_table.to_pandas()
+                    # Rename columns to match MAST columns
+                    df = df.rename(columns={
+                        "TIC": "ID",
+                        "RAJ2000": "ra",
+                        "DEJ2000": "dec",
+                        "Rad": "rad",
+                        "wdflg": "wdflag"
+                    })
+                    query_success = True
+                    logger.info("VizieR TIC query successful.")
+                else:
+                    raise ValueError("VizieR returned empty catalog list")
+            except Exception as e_viz:
+                logger.warning(f"VizieR TIC query backup failed: {e_viz}")
+                raise RuntimeError("All MAST and VizieR query attempts failed.")
         required_cols = ["ID", "ra", "dec", "Tmag", "Teff", "rad", "logg",
                          "contratio", "priority", "wdflag"]
         existing_cols = [c for c in required_cols if c in df.columns]

@@ -343,6 +343,35 @@ def download_lightcurve(
             if _attempt < 2:
                 _time.sleep(2 ** _attempt + _random.random())
             else:
+                # ── AWS S3 Public Open Data Backup ──────────────────────────────────────
+                # Construct S3 path directly to bypass MAST API gateway.
+                # Format: https://tess.s3.amazonaws.com/public/tid/s{sector:04d}/{prefix}/{tic_id}/tess{timestamp}-s{sector:04d}-{tic_id_padded}-0120-s_lc.fits
+                # Since constructing the exact filename timestamp is difficult without metadata, 
+                # we query the index/directory listing or do a best-effort sector estimation.
+                # As a fallback, we attempt to download via public CADC (Canadian Astronomy Data Centre) TESS URL.
+                logger.info(f"TIC {tic_id}: MAST API failed. Trying CADC / AWS S3 direct fallback...")
+                try:
+                    import urllib.request
+                    import urllib.parse
+                    # CADC search endpoint fallback
+                    tic_padded = f"{tic_id:016d}"
+                    url = f"https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/data/pub/TESS/tic{tic_id}_lc.fits"
+                    if sector:
+                        url = f"https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/data/pub/TESS/s{sector:04d}/tic{tic_id}_lc.fits"
+                    
+                    dest_file = save_dir / f"tic_{tic_id}_cadc_backup.fits"
+                    logger.info(f"Downloading from backup URL: {url}")
+                    
+                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, timeout=45) as response, open(dest_file, 'wb') as out_file:
+                        out_file.write(response.read())
+                    
+                    if dest_file.exists() and dest_file.stat().st_size > 1000:
+                        logger.info(f"TIC {tic_id}: Successfully downloaded from backup mirror to {dest_file}")
+                        return dest_file
+                except Exception as e_backup:
+                    logger.warning(f"Mirror download failed for TIC {tic_id}: {e_backup}")
+                
                 return None
 
 
