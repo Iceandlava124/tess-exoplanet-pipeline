@@ -128,23 +128,18 @@ def run_pipeline(tic_id: int, sector: int = None, snr_threshold: float = 5.0, fo
             "combined_confidence": 0.0,
             "flag_reasons": alias_reason,
         }
-        # Append to results.csv with alias_discard flag_reason
-        import csv as _csv
-        results_csv_path = ROOT / "results" / "results.csv"
-        file_exists = results_csv_path.exists()
-        with open(results_csv_path, "a", newline="", encoding="utf-8") as _f:
-            _w = _csv.writer(_f)
-            if not file_exists:
-                _w.writerow(["tic_id", "decision", "final_class", "confidence",
-                             "period", "period_err", "depth", "depth_err",
-                             "duration", "duration_err", "snr", "flag_reasons"])
-            _w.writerow([
-                tic_id, "DISCARD", "No Signal", "0.0000",
-                f"{rejected_period:.6f}", "0.0001",
-                "0.000000", "0.0001", "0.000000", "0.001",
-                f"{rejected_snr:.2f}",
-                alias_reason,
-            ])
+        # Mirror alias-discard to SQLite only (CSV is written by the caller / runner)
+        # This prevents duplicate rows when kaggle_discovery_runner calls run_pipeline().
+        try:
+            from src.cache_manager import save_pipeline_result
+            save_pipeline_result(
+                tic_id=tic_id, decision="DISCARD", final_class="No Signal",
+                confidence=0.0, period=rejected_period, period_err=0.0,
+                depth=0.0, depth_err=0.0, duration=0.1, duration_err=0.0,
+                snr=rejected_snr, flag_reasons=alias_reason
+            )
+        except Exception as _sqle:
+            logger.warning(f"SQLite mirror failed for alias-discard TIC {tic_id}: {_sqle}")
         # Save minimal JSON report
         report = {
             "tic_id": tic_id,

@@ -1155,6 +1155,18 @@ def run_discovery_session(
 
     pbar = tqdm(total=len(target_list), desc="Discovery", unit="star")
 
+    # Track already-written TIC IDs to prevent duplicate rows on resume
+    written_tic_ids: set = set()
+    if os.path.isfile(results_csv):
+        try:
+            import pandas as _pd_dedup
+            _existing = _pd_dedup.read_csv(results_csv, usecols=["tic_id"], on_bad_lines="skip")
+            written_tic_ids = set(_existing["tic_id"].astype(int).tolist())
+            if written_tic_ids:
+                logger.info(f"Resume mode: {len(written_tic_ids)} TIC IDs already in results.csv — skipping duplicates.")
+        except Exception as _de:
+            logger.warning(f"Could not read existing results.csv for dedup: {_de}")
+
     import tensorflow as tf
     logger.info(f"[DEVICE] TensorFlow running on: {tf.test.gpu_device_name() or 'CPU'}")
 
@@ -1246,7 +1258,12 @@ def run_discovery_session(
         if len(pending_rows) >= save_every_n:
             try:
                 for r in pending_rows:
-                    _write_csv_row(results_csv, r)
+                    r_tic = int(r.get("tic_id", -1))
+                    if r_tic not in written_tic_ids:
+                        _write_csv_row(results_csv, r)
+                        written_tic_ids.add(r_tic)
+                    else:
+                        logger.debug(f"Dedup skip: TIC {r_tic} already in results.csv")
                 pending_rows = []
                 logger.info(f"Checkpoint: saved {n_processed} stars so far.")
             except Exception as e:
@@ -1259,7 +1276,12 @@ def run_discovery_session(
     # ── Final save for any remaining rows ─────────────────────────────────────
     try:
         for r in pending_rows:
-            _write_csv_row(results_csv, r)
+            r_tic = int(r.get("tic_id", -1))
+            if r_tic not in written_tic_ids:
+                _write_csv_row(results_csv, r)
+                written_tic_ids.add(r_tic)
+            else:
+                logger.debug(f"Dedup skip (final): TIC {r_tic} already in results.csv")
         pending_rows = []
     except Exception as e:
         logger.error(f"Final save failed: {e}")

@@ -30,52 +30,22 @@ LABEL_NAMES = {
 
 
 def load_random_forest(model_path: Optional[Path] = None):
-    """Load the trained Random Forest classifier. If missing, trains a baseline on-the-fly."""
+    """Load the trained Random Forest classifier. Returns None if not found (caller handles fallback)."""
     import joblib
     if model_path is None:
         model_path = MODELS_DIR / "random_forest.pkl"
     if not model_path.exists():
-        logger.warning(f"Random Forest model not found at {model_path}. Training a baseline Random Forest on the fly...")
-        try:
-            from sklearn.ensemble import RandomForestClassifier
-            import pandas as pd
-            
-            # Simple synthetic/baseline training set
-            n_samples = 200
-            feature_keys = [
-                'bls_snr', 'transit_depth', 'odd_even_diff', 'secondary_depth',
-                'bls_period', 'transit_duration_hrs', 'oot_rms'
-            ]
-            
-            # Generate basic mock training features to get standard output shapes
-            mock_data = []
-            for i in range(n_samples):
-                label = i % 4
-                if label == 1: # Planet Transit
-                    mock_data.append([12.0, 0.005, 0.0001, 0.0001, 3.5, 3.0, 0.0005, 1])
-                elif label == 2: # Eclipsing Binary
-                    mock_data.append([45.0, 0.15, 0.05, 0.08, 1.2, 4.0, 0.0008, 2])
-                elif label == 3: # False Positive
-                    mock_data.append([6.0, 0.002, 0.0001, 0.0001, 5.0, 2.5, 0.002, 3])
-                else: # No Signal
-                    mock_data.append([3.0, 0.0001, 0.0001, 0.0001, 10.0, 1.0, 0.001, 0])
-            
-            df_mock = pd.DataFrame(mock_data, columns=feature_keys + ['label'])
-            rf_clf = RandomForestClassifier(n_estimators=100, max_depth=6, random_state=42)
-            rf_clf.fit(df_mock[feature_keys], df_mock['label'])
-            
-            MODELS_DIR.mkdir(parents=True, exist_ok=True)
-            joblib.dump(rf_clf, model_path)
-            logger.info("Successfully trained and saved baseline Random Forest.")
-            return rf_clf
-        except Exception as e_rf:
-            logger.error(f"Failed to auto-train baseline Random Forest: {e_rf}")
-            raise FileNotFoundError(f"Random Forest model not found at {model_path}.")
+        logger.warning(
+            f"Random Forest model not found at {model_path}. "
+            f"Upload models/random_forest.pkl to your Kaggle dataset to enable RF classification. "
+            f"Falling back to uniform priors (confidence=0.0 from RF)."
+        )
+        return None
     return joblib.load(model_path)
 
 
 def load_cnn(model_path: Optional[Path] = None):
-    """Load the trained CNN classifier. If missing, compiles and saves a baseline on-the-fly."""
+    """Load the trained CNN classifier. Returns None if not found (caller handles fallback)."""
     import tensorflow as tf
     
     # Patch BatchNormalization for Keras 2 -> Keras 3 deserialization compatibility
@@ -87,36 +57,18 @@ def load_cnn(model_path: Optional[Path] = None):
                 kwargs.pop(k, None)
             original_init(self, *args, **kwargs)
         BatchNormalization.__init__ = patched_init
-    except Exception as e:
+    except Exception:
         pass
 
     if model_path is None:
         model_path = MODELS_DIR / "cnn_classifier.h5"
     if not model_path.exists():
-        logger.warning(f"CNN model not found at {model_path}. Building baseline CNN on the fly...")
-        try:
-            model = tf.keras.models.Sequential([
-                tf.keras.layers.Input(shape=(200, 1)),
-                tf.keras.layers.Conv1D(16, kernel_size=5, activation='relu', padding='same'),
-                tf.keras.layers.MaxPooling1D(pool_size=2),
-                tf.keras.layers.Flatten(),
-                tf.keras.layers.Dense(32, activation='relu'),
-                tf.keras.layers.Dense(4, activation='softmax')
-            ])
-            model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-            
-            # Fast fit on synthetic sine waves to initialize weights
-            X_mock = np.random.normal(1.0, 0.001, (20, 200, 1)).astype(np.float32)
-            y_mock = tf.keras.utils.to_categorical(np.random.randint(0, 4, 20), num_classes=4)
-            model.fit(X_mock, y_mock, epochs=1, verbose=0)
-            
-            MODELS_DIR.mkdir(parents=True, exist_ok=True)
-            model.save(str(model_path))
-            logger.info("Successfully initialized and saved baseline CNN.")
-            return model
-        except Exception as e_cnn:
-            logger.error(f"Failed to auto-build baseline CNN: {e_cnn}")
-            raise FileNotFoundError(f"CNN model not found at {model_path}.")
+        logger.warning(
+            f"CNN model not found at {model_path}. "
+            f"Upload models/cnn_classifier.h5 to your Kaggle dataset to enable CNN classification. "
+            f"RF-only mode will be used (CNN proba = RF proba as fallback)."
+        )
+        return None
     return tf.keras.models.load_model(str(model_path))
 
 
@@ -149,6 +101,11 @@ def classify_with_rf(
     import pandas as pd
     if model is None:
         model = load_random_forest()
+
+    # If model is still None (weights not found), return uniform priors at zero confidence
+    if model is None:
+        logger.warning("RF model unavailable — returning uniform priors (confidence=0.0 from RF)")
+        return 0, np.array([0.25, 0.25, 0.25, 0.25])
 
     feature_keys = [
         'bls_snr', 'transit_depth', 'odd_even_diff', 'secondary_depth',
@@ -199,6 +156,11 @@ def classify_with_cnn(
     """
     if model is None:
         model = load_cnn()
+
+    # If CNN model is unavailable, return uniform priors — RF will carry the ensemble
+    if model is None:
+        logger.warning("CNN model unavailable — returning uniform priors (RF will carry ensemble)")
+        return 0, np.array([0.25, 0.25, 0.25, 0.25])
 
     # Normalize input: extract flux if phase-folded input is passed as a tuple/list/2D array of (phase, flux)
     if isinstance(phase_folded_lc, (tuple, list)) and len(phase_folded_lc) == 2:

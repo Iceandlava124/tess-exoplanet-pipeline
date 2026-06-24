@@ -71,7 +71,20 @@ def apply_quality_mask(lc: lk.LightCurve, bitmask: int = 175) -> lk.LightCurve:
         By applying a bitmask, we zero out points where any of these
         issues occurred. Bitmask 175 removes the most common issues.
     """
+    try:
+        # Apply TESS quality bitmask to remove bad cadences
+        # (attitude tweaks, safe mode, cosmic rays, coarse pointing, etc.)
+        if hasattr(lc, 'quality') and lc.quality is not None:
+            quality_mask = (lc.quality & bitmask) == 0
+            if quality_mask.sum() > 50:   # keep if enough good points remain
+                lc = lc[quality_mask]
+                logger.debug(f"Quality mask (bitmask={bitmask}): {quality_mask.sum()}/{len(quality_mask)} cadences kept")
+            else:
+                logger.warning(f"Quality mask too aggressive ({quality_mask.sum()} points). Skipping bitmask.")
+    except Exception as qm_err:
+        logger.warning(f"Quality bitmask application failed: {qm_err}. Proceeding without.")
     return lc.remove_outliers(sigma=5).select_flux("pdcsap_flux")
+
 
 
 def sigma_clip(

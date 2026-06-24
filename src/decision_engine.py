@@ -34,7 +34,7 @@ def apply_sector_weighting(combined_confidence: float, n_sectors_consistent: int
     # Cap at 0.99 — never give 100% confidence
     return min(combined_confidence * boost, 0.99)
 
-def evaluate_decision(classification: dict, reverse_results: dict, bls_params: dict, quality_flag: str = "good", forward_fit: dict = None, n_sectors_consistent: int = 1) -> dict:
+def evaluate_decision(classification: dict, reverse_results: dict, bls_params: dict, quality_flag: str = "good", forward_fit: dict = None, n_sectors_consistent: int = 1, snr_flag_threshold: float = 5.0) -> dict:
     """
     Perform cross-check between forward ML and reverse physics pipelines, and make a decision.
     
@@ -93,7 +93,11 @@ def evaluate_decision(classification: dict, reverse_results: dict, bls_params: d
             class_physics_agreement = False
             
     # Calculate Combined Confidence
-    combined_confidence = forward_confidence * (reverse_tests_passed / 6.0)
+    # Use forward_confidence as a floor so that a failed reverse pipeline
+    # (tests_passed=0) does NOT completely erase a strong ML signal.
+    # floor = 50% of forward_confidence (penalise but don't zero out)
+    tests_ratio = reverse_tests_passed / 6.0
+    combined_confidence = forward_confidence * max(tests_ratio, 0.5 if forward_confidence > 0.6 else 0.3)
     if not period_agreement:
         combined_confidence *= 0.5
     if not rp_agreement:
@@ -113,9 +117,10 @@ def evaluate_decision(classification: dict, reverse_results: dict, bls_params: d
     if symmetry_score < 0.7:
         flag_reasons.append(f"Asymmetric transit shape (symmetry score: {symmetry_score:.2f} < 0.70)")
         
-    # Special case B: Period ambiguity
-    if bls_params.get("snr", 0.0) < 6.5:
-        flag_reasons.append(f"Borderline signal SNR ({bls_params.get('snr'):.2f} < 6.5)")
+    # Special case B: Period ambiguity — use the caller-supplied snr_flag_threshold
+    # (defaults to 5.0 to stay consistent with the pipeline's min_transit_snr gate)
+    if bls_params.get("snr", 0.0) < snr_flag_threshold:
+        flag_reasons.append(f"Borderline signal SNR ({bls_params.get('snr'):.2f} < {snr_flag_threshold:.1f})")
         
     # Special case C: Preprocessing quality flag is "poor"
     if quality_flag == "poor":
@@ -169,13 +174,14 @@ def log_to_manual_review_queue(tic_id: int, decision_results: dict, fit_results:
         with open(file_path, "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             if not file_exists:
-                writer.writerow(["tic_id", "combined_confidence", "period", "depth", "flag_reasons"])
+                writer.writerow(["tic_id", "combined_confidence", "period", "depth", "flag_reasons", "tests_passed"])
             writer.writerow([
                 tic_id,
                 f"{decision_results['combined_confidence']:.4f}",
                 f"{fit_results.get('period', 0.0):.6f}",
                 f"{fit_results.get('depth', 0.0):.6f}",
-                decision_results["flag_reasons"]
+                decision_results["flag_reasons"],
+                decision_results.get("tests_passed", 0),
             ])
     except Exception as e:
         logger.error(f"Failed to log to manual review queue: {e}")
