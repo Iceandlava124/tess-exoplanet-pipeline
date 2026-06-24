@@ -532,6 +532,16 @@ def run_pipeline(tic_id: int, sector: int = None, snr_threshold: float = 5.0, fo
     except Exception as e:
         logger.warning(f"Failed to update metadata.json: {e}")
     
+    # Auto-generate summary dashboard image
+    try:
+        from src.dashboard import generate_pipeline_dashboard
+        csv_p = str(ROOT / "results" / "results.csv")
+        out_p = str(ROOT / "results" / "pipeline_summary.png")
+        logger.info(f"Generating summary dashboard metrics in results/pipeline_summary.png...")
+        generate_pipeline_dashboard(csv_p, out_p)
+    except Exception as e_dash:
+        logger.warning(f"Failed to auto-generate dashboard metrics: {e_dash}")
+
     logger.info(f"============================================================")
     logger.info(f"   PIPELINE RUN SUCCESSFULLY COMPLETED FOR TIC {tic_id}")
     logger.info(f"============================================================")
