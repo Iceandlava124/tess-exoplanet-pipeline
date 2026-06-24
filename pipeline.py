@@ -518,6 +518,26 @@ def run_pipeline(tic_id: int, sector: int = None, snr_threshold: float = 5.0, fo
             n_sectors_consistent
         ])
     logger.info(f"✅ Appended to results.csv")
+
+    # Mirror to SQLite database for transactional safety
+    try:
+        from src.cache_manager import save_pipeline_result
+        save_pipeline_result(
+            tic_id=tic_id,
+            decision=decision_res["decision"],
+            final_class=classification["label_name"],
+            confidence=decision_res["combined_confidence"],
+            period=fit_res.get("period", 0.0),
+            period_err=0.0001,
+            depth=fit_res.get("depth", 0.0),
+            depth_err=0.0001,
+            duration=fit_res.get("duration", 0.0),
+            duration_err=0.001,
+            snr=bls_params.get("snr", 0.0),
+            flag_reasons=decision_res["flag_reasons"]
+        )
+    except Exception as e_sql:
+        logger.warning(f"Failed to write result to SQLite database: {e_sql}")
     
     # Update results/metadata.json with pipeline version
     try:

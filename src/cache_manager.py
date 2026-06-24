@@ -46,6 +46,23 @@ def get_db_connection():
             PRIMARY KEY (tic_id, sector)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pipeline_results (
+            tic_id INTEGER PRIMARY KEY,
+            decision TEXT,
+            final_class TEXT,
+            confidence REAL,
+            period REAL,
+            period_err REAL,
+            depth REAL,
+            depth_err REAL,
+            duration REAL,
+            duration_err REAL,
+            snr REAL,
+            flag_reasons TEXT,
+            timestamp TEXT NOT NULL
+        )
+    """)
     conn.commit()
     return conn
 
@@ -121,3 +138,40 @@ def save_pixel_contamination(tic_id, sector, contamination_ratio, n_nearby_gaia_
         conn.close()
     except Exception as e:
         logger.warning(f"Cache write error for pixel contamination (TIC {tic_id}, Sector {sector}): {e}")
+
+
+def save_pipeline_result(tic_id, decision, final_class, confidence, period, period_err, depth, depth_err, duration, duration_err, snr, flag_reasons):
+    """Save pipeline result to SQLite database to avoid flat CSV corruption."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO pipeline_results (
+                tic_id, decision, final_class, confidence, period, period_err, 
+                depth, depth_err, duration, duration_err, snr, flag_reasons, timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            int(tic_id), str(decision), str(final_class), float(confidence), 
+            float(period), float(period_err), float(depth), float(depth_err), 
+            float(duration), float(duration_err), float(snr), str(flag_reasons), 
+            datetime.utcnow().isoformat()
+        ))
+        conn.commit()
+        conn.close()
+        logger.info(f"Successfully cached result for TIC {tic_id} in SQLite pipeline_results database.")
+    except Exception as e:
+        logger.error(f"SQL database write error for pipeline result (TIC {tic_id}): {e}")
+
+
+def get_all_results():
+    """Retrieve all cached pipeline results as a pandas DataFrame."""
+    try:
+        import pandas as pd
+        conn = get_db_connection()
+        df = pd.read_sql_query("SELECT * FROM pipeline_results", conn)
+        conn.close()
+        return df
+    except Exception as e:
+        logger.error(f"SQL database read error for all results: {e}")
+        import pandas as pd
+        return pd.DataFrame()
