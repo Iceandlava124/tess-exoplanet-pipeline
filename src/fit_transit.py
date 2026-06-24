@@ -250,7 +250,8 @@ def fit_batman_transit(
     depths_bs, periods_bs, durs_bs = [], [], []
 
     for _ in range(n_bootstrap):
-        idx = np.random.choice(len(time), size=len(time), replace=True)
+        # Sort indices to keep the time array strictly increasing (strictly required by batman model)
+        idx = np.sort(np.random.choice(len(time), size=len(time), replace=True))
         t_bs, f_bs, e_bs = time[idx], flux[idx], flux_err[idx]
 
         def chi2_bs(x):
